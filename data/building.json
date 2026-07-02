@@ -1,0 +1,48 @@
+{
+  "name": "Christliche Schule Herzogenbuchsee",
+  "floors": [
+    {
+      "id": "ground",
+      "label": "Erdgeschoss",
+      "width": 120,
+      "height": 72,
+      "rooms": [
+        { "id": "entrance", "label": "Eingang", "x": 4, "y": 28, "w": 18, "h": 16 },
+        { "id": "aula", "label": "Aula", "x": 26, "y": 8, "w": 42, "h": 28 },
+        { "id": "mensa", "label": "Mensa", "x": 72, "y": 8, "w": 28, "h": 22 },
+        { "id": "sek", "label": "Sekretariat", "x": 72, "y": 34, "w": 20, "h": 14 },
+        { "id": "gym", "label": "Turnhalle", "x": 8, "y": 48, "w": 50, "h": 20 },
+        { "id": "werk", "label": "Werkstätte", "x": 62, "y": 52, "w": 24, "h": 16 },
+        { "id": "it", "label": "IT / Server", "x": 90, "y": 52, "w": 18, "h": 16 }
+      ]
+    },
+    {
+      "id": "floor1",
+      "label": "1. Obergeschoss",
+      "width": 120,
+      "height": 72,
+      "rooms": [
+        { "id": "stairs", "label": "Treppe", "x": 4, "y": 28, "w": 12, "h": 16 },
+        { "id": "r101", "label": "101", "x": 20, "y": 8, "w": 18, "h": 14 },
+        { "id": "r102", "label": "102", "x": 42, "y": 8, "w": 18, "h": 14 },
+        { "id": "r103", "label": "103", "x": 64, "y": 8, "w": 18, "h": 14 },
+        { "id": "r104", "label": "104", "x": 86, "y": 8, "w": 18, "h": 14 },
+        { "id": "r201", "label": "201", "x": 20, "y": 28, "w": 18, "h": 14 },
+        { "id": "r202", "label": "202", "x": 42, "y": 28, "w": 18, "h": 14 },
+        { "id": "r203", "label": "203", "x": 64, "y": 28, "w": 18, "h": 14 },
+        { "id": "r204", "label": "204", "x": 86, "y": 28, "w": 18, "h": 14 },
+        { "id": "lib", "label": "Bibliothek", "x": 20, "y": 50, "w": 40, "h": 18 },
+        { "id": "lab", "label": "Labor", "x": 66, "y": 50, "w": 38, "h": 18 }
+      ]
+    }
+  ],
+  "accessPoints": [
+    { "id": "ap-eg-aula", "label": "AP EG Aula", "floorId": "ground", "x": 48, "y": 22, "bssids": ["aa:11:22:33:44:01"] },
+    { "id": "ap-eg-mensa", "label": "AP EG Mensa", "floorId": "ground", "x": 86, "y": 18, "bssids": ["aa:11:22:33:44:02"] },
+    { "id": "ap-eg-gym", "label": "AP EG Turnhalle", "floorId": "ground", "x": 32, "y": 58, "bssids": ["aa:11:22:33:44:03"] },
+    { "id": "ap-demo-1", "label": "AP EG IT", "floorId": "ground", "x": 98, "y": 58, "bssids": ["aa:11:22:33:44:04"] },
+    { "id": "ap-1g-north", "label": "AP 1G Nord", "floorId": "floor1", "x": 52, "y": 16, "bssids": ["bb:11:22:33:44:01"] },
+    { "id": "ap-1g-south", "label": "AP 1G Süd", "floorId": "floor1", "x": 52, "y": 58, "bssids": ["bb:11:22:33:44:02"] },
+    { "id": "ap-1g-east", "label": "AP 1G Ost", "floorId": "floor1", "x": 98, "y": 36, "bssids": ["bb:11:22:33:44:03"] }
+  ]
+}

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+.DS_Store
+# live client dump from the WLAN controller
+data/clients.json

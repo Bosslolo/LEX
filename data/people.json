@@ -1,0 +1,27 @@
+{
+  "people": [
+    {
+      "id": "demo1",
+      "displayName": "Demo User",
+      "radiusUser": "demo.user",
+      "hostnamePatterns": ["*demo*", "Demo-*", "MacBook*Demo*"],
+      "devices": [
+        { "mac": "aa:bb:cc:dd:ee:01", "label": "MacBook" }
+      ]
+    },
+    {
+      "id": "demo2",
+      "displayName": "Student A",
+      "radiusUser": "student.a",
+      "hostnamePatterns": ["*studenta*", "StudentA-*"],
+      "devices": []
+    },
+    {
+      "id": "demo3",
+      "displayName": "Student B",
+      "radiusUser": "student.b",
+      "hostnamePatterns": ["*studentb*", "StudentB-*"],
+      "devices": []
+    }
+  ]
+}

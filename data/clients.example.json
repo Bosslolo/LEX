@@ -1,0 +1,17 @@
+{
+  "clients": [
+    {
+      "mac": "aa:bb:cc:dd:ee:01",
+      "hostname": "Demo-MacBook-Pro",
+      "radiusUser": "demo.user",
+      "ip": "192.168.1.100",
+      "ssid": "SCHOOL-WIFI",
+      "apId": "ap-demo-1",
+      "rssi": -58,
+      "vlan": "22",
+      "vendor": "Apple",
+      "deviceKind": "laptop",
+      "lastSeen": "2026-07-01T12:00:00.000Z"
+    }
+  ]
+}
