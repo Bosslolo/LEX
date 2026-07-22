@@ -2,6 +2,8 @@
 
 Pin **people** (not raw devices) onto a **switchable floor plan** using whatever the network tells you: AP association, RSSI, RADIUS username, hostname, MAC.
 
+**RuView integration (later):** multi-AP fingerprinting and quality gates from the RuView research repo will land in `server/positioning/` and `server/integrations/ruview/` — not as a separate hub app. See [server/integrations/ruview/README.md](server/integrations/ruview/README.md).
+
 ## Quick start
 
 ```bash
@@ -20,7 +22,7 @@ WiFi controller / DHCP / RADIUS / ARP  →  ClientObservation[]
         ↓
 Identity resolver (same radiusUser, hostname patterns, manual MAC)
         ↓
-Position engine (AP zone + RSSI-weighted centroid)
+Position engine (AP zone + RSSI-weighted centroid)  ← server/positioning/
         ↓
 Floor plan SVG (ground | floor1)
 ```
@@ -92,4 +94,4 @@ Set `LOCATOR_SOURCE=file` and point a poller at your controller.
 1. Map real AP names/locations onto `building.json` (ask IT for AP list).
 2. Add everyone you care about to `people.json`.
 3. Build a poller once the WiFi platform is known (Sophos / Aruba / …).
-4. Optionally expose via your Cloudflare tunnel on `192.168.1.1`.
+4. Expose via Cloudflare tunnel or school LAN when ready.

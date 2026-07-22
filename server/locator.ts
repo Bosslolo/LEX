@@ -8,6 +8,7 @@ import type {
   ResolvedDevice,
 } from "../shared/types.js";
 import { normalizeMac } from "./sources/types.js";
+import { offsetFromRssi, rssiToWeight } from "./positioning/rssi-weight.js";
 
 function globMatch(pattern: string, value: string): boolean {
   const re = new RegExp(
@@ -62,24 +63,6 @@ export function groupByPerson(
   }
 
   return groups;
-}
-
-function rssiToWeight(rssi: number): number {
-  // Stronger signal → higher weight. Clamp typical school range.
-  const clamped = Math.max(-90, Math.min(-40, rssi));
-  return Math.pow(10, (clamped + 90) / 15);
-}
-
-function offsetFromRssi(ap: AccessPoint, rssi: number, seed: string): { x: number; y: number } {
-  // Rough offset toward room center based on signal strength (weaker = farther from AP).
-  const strength = (rssi + 90) / 50;
-  const dist = (1 - Math.min(1, strength)) * 12;
-  const hash = [...seed].reduce((a, c) => a + c.charCodeAt(0), 0);
-  const angle = (hash % 360) * (Math.PI / 180);
-  return {
-    x: ap.x + Math.cos(angle) * dist,
-    y: ap.y + Math.sin(angle) * dist,
-  };
 }
 
 export function locatePerson(
