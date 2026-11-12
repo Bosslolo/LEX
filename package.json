@@ -1,11 +1,15 @@
 {
   "name": "lex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "LEX — school WiFi sensing experiment (cheap-first)",
+  "description": "LEX — school WiFi CSI + camera compare (single repo)",
   "scripts": {
-    "start": "node server/index.js",
-    "sim": "python3 tools/sim_presence.py",
+    "setup": "python3 -m venv .venv && .venv/bin/pip install -U pip && .venv/bin/pip install -r requirements.txt",
+    "start": "python3 -m host.main",
+    "start:sim": "python3 -m host.main --sim --no-camera",
+    "compare": "python3 tools/camera_compare.py",
+    "phase0": "node server/index.js",
+    "phase0:sim": "python3 tools/sim_presence.py",
     "check": "node -e \"console.log('node ok', process.version)\" && python3 -c \"print('python ok')\""
   },
   "engines": {

@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LEX — Room Sense</title>
+    <style>
+      :root {
+        --bg0: #10160f;
+        --ink: #edf3ea;
+        --muted: #9aaf9d;
+        --ok: #74d28c;
+        --warn: #e0a45c;
+        --bad: #e07a6a;
+        --accent: #7ec8e3;
+        --line: rgba(237, 243, 234, 0.14);
+        --panel: rgba(0, 0, 0, 0.22);
+        --font: "Avenir Next", "Segoe UI", sans-serif;
+        --display: "Iowan Old Style", Palatino, Georgia, serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        color: var(--ink);
+        font-family: var(--font);
+        background:
+          radial-gradient(ellipse 70% 45% at 15% 0%, #243528 0%, transparent 55%),
+          radial-gradient(ellipse 55% 40% at 100% 100%, #1a2430 0%, transparent 50%),
+          var(--bg0);
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: end;
+        justify-content: space-between;
+        gap: 1rem;
+        max-width: 72rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.25rem 0.75rem;
+      }
+      .brand {
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(2.2rem, 6vw, 3.2rem);
+        letter-spacing: 0.08em;
+        line-height: 0.95;
+      }
+      .sub {
+        margin: 0.35rem 0 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .tabs {
+        display: flex;
+        gap: 0.4rem;
+        border-bottom: 1px solid var(--line);
+      }
+      .tabs button {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-size: 0.92rem;
+        padding: 0.55rem 0.9rem;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+      }
+      .tabs button[aria-selected="true"] {
+        color: var(--ink);
+        border-bottom-color: var(--ok);
+      }
+      main {
+        max-width: 72rem;
+        margin: 0 auto;
+        padding: 1rem 1.25rem 2rem;
+      }
+      .view[hidden] { display: none !important; }
+      .simple-grid {
+        display: grid;
+        grid-template-columns: 1.4fr 0.9fr;
+        gap: 1.25rem;
+      }
+      @media (max-width: 860px) {
+        .simple-grid { grid-template-columns: 1fr; }
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        padding: 1rem;
+      }
+      .headline {
+        margin: 0 0 0.35rem;
+        font-family: var(--display);
+        font-size: clamp(1.6rem, 4vw, 2.2rem);
+        line-height: 1.15;
+      }
+      .headline[data-on="true"] { color: var(--ok); }
+      .headline[data-on="false"] { color: var(--warn); }
+      .plain {
+        margin: 0 0 1rem;
+        color: var(--muted);
+        line-height: 1.4;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem 1.1rem;
+        margin: 0 0 0.75rem;
+        color: var(--muted);
+        font-size: 0.82rem;
+      }
+      .legend i {
+        display: inline-block;
+        width: 0.7rem;
+        height: 0.7rem;
+        margin-right: 0.35rem;
+        vertical-align: -0.05rem;
+        border-radius: 50%;
+      }
+      .dot-device { background: var(--accent); }
+      .dot-person { background: var(--ok); }
+      .dot-heat { background: #c9a46a; }
+      canvas.map {
+        width: 100%;
+        height: auto;
+        display: block;
+        background: #0c120e;
+        border: 1px solid var(--line);
+      }
+      .side-stats {
+        display: grid;
+        gap: 0.85rem;
+      }
+      .stat span {
+        display: block;
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .stat strong {
+        display: block;
+        margin-top: 0.2rem;
+        font-size: 1.2rem;
+        font-variant-numeric: tabular-nums;
+      }
+      .badge {
+        display: inline-block;
+        margin-top: 0.75rem;
+        padding: 0.35rem 0.55rem;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+      .tech-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      @media (max-width: 860px) {
+        .tech-grid { grid-template-columns: 1fr; }
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+      }
+      th, td {
+        text-align: left;
+        padding: 0.4rem 0.2rem;
+        border-bottom: 1px solid var(--line);
+        font-variant-numeric: tabular-nums;
+      }
+      th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+      canvas.chart {
+        width: 100%;
+        height: 160px;
+        display: block;
+        background: #0c120e;
+        border: 1px solid var(--line);
+      }
+      pre {
+        margin: 0;
+        max-height: 280px;
+        overflow: auto;
+        font-size: 0.75rem;
+        line-height: 1.35;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .status {
+        margin-top: 1rem;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      .status[data-ok="false"] { color: var(--bad); }
+      .hint { margin-top: 1.25rem; color: var(--muted); font-size: 0.82rem; }
+      a { color: var(--ink); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <p class="brand">LEX</p>
+        <p class="sub">Room sense — school demo</p>
+      </div>
+      <div class="tabs" role="tablist" aria-label="View mode">
+        <button role="tab" id="tab-simple" aria-selected="true" aria-controls="view-simple">Simple</button>
+        <button role="tab" id="tab-tech" aria-selected="false" aria-controls="view-tech">Technical</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="view-simple" class="view" role="tabpanel">
+        <div class="simple-grid">
+          <div class="panel">
+            <p class="headline" id="headline" data-on="false">Looking for people…</p>
+            <p class="plain" id="plain">
+              This Mac listens to WiFi signal changes in the room. When someone is here, a stick figure appears on the map.
+            </p>
+            <div class="legend">
+              <span><i class="dot-device"></i>Sensor (this Mac)</span>
+              <span><i class="dot-person"></i>Person (WiFi estimate)</span>
+              <span><i class="dot-heat"></i>Signal activity</span>
+            </div>
+            <canvas class="map" id="map" width="900" height="560" aria-label="Room map with devices and skeletons"></canvas>
+          </div>
+          <div class="panel side-stats">
+            <div class="stat"><span>People seen</span><strong id="people">0</strong></div>
+            <div class="stat"><span>What they’re doing</span><strong id="activity">—</strong></div>
+            <div class="stat"><span>Devices on map</span><strong id="deviceCount">1</strong></div>
+            <div class="stat"><span>WiFi signal</span><strong id="rssiSimple">—</strong></div>
+            <div class="badge" id="modeBadge">Mode: Mac WiFi (cheap pilot)</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-tech" class="view" role="tabpanel" hidden>
+        <div class="tech-grid">
+          <div class="panel">
+            <table>
+              <tr><th>Field</th><th>Value</th></tr>
+              <tr><td>source</td><td id="t-source">—</td></tr>
+              <tr><td>tick</td><td id="t-tick">—</td></tr>
+              <tr><td>presence</td><td id="t-presence">—</td></tr>
+              <tr><td>motion_level</td><td id="t-motion">—</td></tr>
+              <tr><td>confidence</td><td id="t-conf">—</td></tr>
+              <tr><td>estimated_persons</td><td id="t-est">—</td></tr>
+              <tr><td>rssi_dbm</td><td id="t-rssi">—</td></tr>
+              <tr><td>keypoints / person</td><td id="t-kps">—</td></tr>
+              <tr><td>signal_field grid</td><td id="t-grid">—</td></tr>
+            </table>
+            <div style="margin-top:1rem">
+              <div class="legend"><span>RSSI history (dBm)</span></div>
+              <canvas class="chart" id="chart" width="640" height="160"></canvas>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="legend"><span>Latest payload (trimmed)</span></div>
+            <pre id="raw">—</pre>
+          </div>
+        </div>
+      </section>
+
+      <p class="status" id="status" data-ok="true">Connecting…</p>
+      <p class="hint">
+        Full RuView UI: <a href="/ui/index.html">/ui/index.html</a> ·
+        3D: <a href="/ui/viz.html">/ui/viz.html</a>
+      </p>
+    </main>
+
+    <script>
+      const BONES = [
+        ["left_shoulder", "right_shoulder"],
+        ["left_shoulder", "left_elbow"],
+        ["left_elbow", "left_wrist"],
+        ["right_shoulder", "right_elbow"],
+        ["right_elbow", "right_wrist"],
+        ["left_shoulder", "left_hip"],
+        ["right_shoulder", "right_hip"],
+        ["left_hip", "right_hip"],
+        ["left_hip", "left_knee"],
+        ["left_knee", "left_ankle"],
+        ["right_hip", "right_knee"],
+        ["right_knee", "right_ankle"],
+        ["nose", "left_shoulder"],
+        ["nose", "right_shoulder"],
+      ];
+
+      const ACTIVITY = {
+        absent: "Nobody moving around",
+        present_still: "Someone is here (still)",
+        active: "Someone is moving",
+        walking: "Someone is walking",
+      };
+
+      const rssiHistory = [];
+      const MAX_HIST = 60;
+      let latest = null;
+
+      const tabSimple = document.getElementById("tab-simple");
+      const tabTech = document.getElementById("tab-tech");
+      const viewSimple = document.getElementById("view-simple");
+      const viewTech = document.getElementById("view-tech");
+
+      function setTab(which) {
+        const simple = which === "simple";
+        tabSimple.setAttribute("aria-selected", String(simple));
+        tabTech.setAttribute("aria-selected", String(!simple));
+        viewSimple.hidden = !simple;
+        viewTech.hidden = simple;
+      }
+      tabSimple.addEventListener("click", () => setTab("simple"));
+      tabTech.addEventListener("click", () => setTab("tech"));
+
+      function byName(person) {
+        const m = {};
+        for (const k of person.keypoints || []) m[k.name] = k;
+        return m;
+      }
+
+      function drawMap(data) {
+        const canvas = document.getElementById("map");
+        const ctx = canvas.getContext("2d");
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+
+        // room floor
+        ctx.fillStyle = "#121a14";
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = "rgba(237,243,234,0.12)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(24, 24, w - 48, h - 48);
+
+        // soft grid
+        ctx.strokeStyle = "rgba(237,243,234,0.05)";
+        ctx.lineWidth = 1;
+        for (let x = 24; x < w - 24; x += 40) {
+          ctx.beginPath(); ctx.moveTo(x, 24); ctx.lineTo(x, h - 24); ctx.stroke();
+        }
+        for (let y = 24; y < h - 24; y += 40) {
+          ctx.beginPath(); ctx.moveTo(24, y); ctx.lineTo(w - 24, y); ctx.stroke();
+        }
+
+        // signal heat (top-down-ish from 20x20 field)
+        const field = data.signal_field || {};
+        const values = field.values || [];
+        const grid = field.grid_size || [20, 1, 20];
+        const nx = grid[0] || 20;
+        const nz = grid[2] || 20;
+        if (values.length === nx * nz) {
+          let maxv = 1e-9;
+          for (const v of values) maxv = Math.max(maxv, Math.abs(v));
+          const cellW = (w - 48) / nx;
+          const cellH = (h - 48) / nz;
+          for (let z = 0; z < nz; z++) {
+            for (let x = 0; x < nx; x++) {
+              const v = Math.abs(values[z * nx + x]) / maxv;
+              if (v < 0.08) continue;
+              ctx.fillStyle = `rgba(201,164,106,${0.08 + v * 0.35})`;
+              ctx.fillRect(24 + x * cellW, 24 + z * cellH, cellW + 0.5, cellH + 0.5);
+            }
+          }
+        }
+
+        // devices = sensing nodes (this Mac for now)
+        const nodes = data.nodes || [];
+        const devices = nodes.length ? nodes : [{ node_id: 0, rssi_dbm: null, position: [0, 0, 0] }];
+        devices.forEach((node, i) => {
+          const px = 24 + (w - 48) * (0.18 + i * 0.15);
+          const py = h - 70;
+          // router/laptop glyph
+          ctx.fillStyle = "#7ec8e3";
+          ctx.beginPath();
+          ctx.roundRect(px - 18, py - 12, 36, 24, 4);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(237,243,234,0.35)";
+          ctx.stroke();
+          ctx.fillStyle = "#0c120e";
+          ctx.font = "600 11px Avenir Next, sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("Mac", px, py + 4);
+          ctx.fillStyle = "#9aaf9d";
+          ctx.font = "12px Avenir Next, sans-serif";
+          ctx.fillText(
+            typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(0) + " dBm" : "sensor",
+            px,
+            py + 28
+          );
+        });
+
+        // skeletons
+        const persons = data.persons || [];
+        persons.forEach((person, idx) => {
+          const named = byName(person);
+          const xs = (person.keypoints || []).map((k) => k.x);
+          const ys = (person.keypoints || []).map((k) => k.y);
+          if (!xs.length) return;
+          const minX = Math.min(...xs);
+          const maxX = Math.max(...xs);
+          const minY = Math.min(...ys);
+          const maxY = Math.max(...ys);
+          const bw = Math.max(1, maxX - minX);
+          const bh = Math.max(1, maxY - minY);
+
+          // place figure in room center-ish, offset if multiple
+          const targetH = h * 0.55;
+          const scale = targetH / bh;
+          const ox = w * (0.52 + idx * 0.12) - ((minX + maxX) / 2) * scale;
+          const oy = h * 0.62 - maxY * scale;
+
+          const pt = (name) => {
+            const k = named[name];
+            if (!k) return null;
+            return { x: ox + k.x * scale, y: oy + k.y * scale };
+          };
+
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.strokeStyle = "#74d28c";
+          ctx.lineWidth = 4;
+          for (const [a, b] of BONES) {
+            const pa = pt(a);
+            const pb = pt(b);
+            if (!pa || !pb) continue;
+            ctx.beginPath();
+            ctx.moveTo(pa.x, pa.y);
+            ctx.lineTo(pb.x, pb.y);
+            ctx.stroke();
+          }
+
+          // joints
+          ctx.fillStyle = "#edf3ea";
+          for (const k of person.keypoints || []) {
+            const x = ox + k.x * scale;
+            const y = oy + k.y * scale;
+            ctx.beginPath();
+            ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // label
+          const nose = pt("nose") || pt("left_shoulder");
+          if (nose) {
+            ctx.fillStyle = "#74d28c";
+            ctx.font = "600 13px Avenir Next, sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("Person " + ((person.id ?? idx) + 1), nose.x, nose.y - 16);
+          }
+        });
+
+        if (!persons.length) {
+          ctx.fillStyle = "rgba(224,164,92,0.9)";
+          ctx.font = "600 20px Iowan Old Style, Georgia, serif";
+          ctx.textAlign = "center";
+          ctx.fillText("No person outline yet", w / 2, h * 0.45);
+          ctx.fillStyle = "#9aaf9d";
+          ctx.font = "14px Avenir Next, sans-serif";
+          ctx.fillText("Walk around near the Mac to wake the estimate", w / 2, h * 0.45 + 28);
+        }
+      }
+
+      function drawChart() {
+        const canvas = document.getElementById("chart");
+        const ctx = canvas.getContext("2d");
+        const w = canvas.width;
+        const h = canvas.height;
+        ctx.clearRect(0, 0, w, h);
+        ctx.strokeStyle = "rgba(237,243,234,0.1)";
+        for (let i = 1; i < 4; i++) {
+          const y = (h / 4) * i;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+        if (rssiHistory.length < 2) return;
+        const min = -90;
+        const max = -30;
+        ctx.strokeStyle = "#74d28c";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        rssiHistory.forEach((v, i) => {
+          const x = (i / (MAX_HIST - 1)) * (w - 8) + 4;
+          const y = h - ((v - min) / (max - min)) * (h - 8) - 4;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+
+      function activityLabel(level, presence) {
+        if (!presence) return ACTIVITY.absent;
+        return ACTIVITY[level] || level || "Someone may be here";
+      }
+
+      function updateSimple(d) {
+        const c = d.classification || {};
+        const presence = Boolean(c.presence);
+        const persons = d.persons || [];
+        const node = (d.nodes && d.nodes[0]) || {};
+        const headline = document.getElementById("headline");
+        headline.dataset.on = String(presence);
+        headline.textContent = presence
+          ? persons.length > 1
+            ? `Seeing about ${persons.length} people`
+            : "Someone is in the room"
+          : "Room looks empty";
+        document.getElementById("plain").textContent = presence
+          ? "Green stick figure = WiFi estimate of where a body is. Blue box = this Mac acting as the sensor."
+          : "No clear body outline right now. The Mac is still listening to WiFi changes.";
+        // Prefer visible skeleton count; estimated_persons is often too conservative on Mac WiFi.
+        const peopleCount = Math.max(
+          persons.length,
+          Number(d.estimated_persons || 0),
+          presence ? 1 : 0
+        );
+        document.getElementById("people").textContent = String(peopleCount);
+        document.getElementById("activity").textContent = activityLabel(c.motion_level, presence);
+        document.getElementById("deviceCount").textContent = String((d.nodes || []).length || 1);
+        document.getElementById("rssiSimple").textContent =
+          typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(0) + " dBm" : "—";
+        document.getElementById("modeBadge").textContent =
+          "Mode: Mac WiFi estimate · not camera · not ESP32 CSI yet";
+        drawMap(d);
+      }
+
+      function updateTech(d) {
+        const c = d.classification || {};
+        const node = (d.nodes && d.nodes[0]) || {};
+        const persons = d.persons || [];
+        const field = d.signal_field || {};
+        document.getElementById("t-source").textContent = d.source || "—";
+        document.getElementById("t-tick").textContent = d.tick ?? "—";
+        document.getElementById("t-presence").textContent = String(Boolean(c.presence));
+        document.getElementById("t-motion").textContent = c.motion_level || "—";
+        document.getElementById("t-conf").textContent =
+          typeof c.confidence === "number" ? c.confidence.toFixed(3) : "—";
+        document.getElementById("t-est").textContent = d.estimated_persons ?? "—";
+        document.getElementById("t-rssi").textContent =
+          typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(1) : "—";
+        document.getElementById("t-kps").textContent = persons[0]
+          ? String((persons[0].keypoints || []).length)
+          : "0";
+        document.getElementById("t-grid").textContent = Array.isArray(field.grid_size)
+          ? field.grid_size.join("×")
+          : "—";
+
+        const trim = {
+          source: d.source,
+          tick: d.tick,
+          classification: d.classification,
+          estimated_persons: d.estimated_persons,
+          nodes: d.nodes,
+          persons: (d.persons || []).map((p) => ({
+            id: p.id,
+            confidence: p.confidence,
+            bbox: p.bbox,
+            keypoints: (p.keypoints || []).map((k) => ({
+              name: k.name,
+              x: Number(k.x.toFixed?.(1) ?? k.x),
+              y: Number(k.y.toFixed?.(1) ?? k.y),
+              confidence: k.confidence,
+            })),
+          })),
+          features: d.features,
+        };
+        document.getElementById("raw").textContent = JSON.stringify(trim, null, 2);
+
+        if (typeof node.rssi_dbm === "number") {
+          rssiHistory.push(node.rssi_dbm);
+          if (rssiHistory.length > MAX_HIST) rssiHistory.shift();
+          drawChart();
+        }
+      }
+
+      async function tick() {
+        const status = document.getElementById("status");
+        try {
+          const res = await fetch("/api/v1/sensing/latest", { cache: "no-store" });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          const d = await res.json();
+          latest = d;
+          updateSimple(d);
+          updateTech(d);
+          status.dataset.ok = "true";
+          status.textContent =
+            "Live · " +
+            (d.source || "wifi") +
+            " · tick " +
+            (d.tick ?? "—") +
+            " · skeletons are WiFi estimates (good for demos; ESP32 CSI comes later for higher accuracy)";
+        } catch (err) {
+          status.dataset.ok = "false";
+          status.textContent = "Cannot reach sensing-server (" + err.message + ")";
+        }
+      }
+
+      // roundRect polyfill for older Safari
+      if (!CanvasRenderingContext2D.prototype.roundRect) {
+        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
+          const radius = typeof r === "number" ? r : 4;
+          this.beginPath();
+          this.moveTo(x + radius, y);
+          this.arcTo(x + w, y, x + w, y + h, radius);
+          this.arcTo(x + w, y + h, x, y + h, radius);
+          this.arcTo(x, y + h, x, y, radius);
+          this.arcTo(x, y, x + w, y, radius);
+          this.closePath();
+        };
+      }
+
+      tick();
+      setInterval(tick, 500);
+    </script>
+  </body>
+</html>

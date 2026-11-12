@@ -1,50 +1,89 @@
 # LEX
 
-School project workspace — **separate from RuView**.
+School WiFi sensing pilot — **one repo** for CSI boards, room UI, camera baseline, and RuView notes.
 
-Goal: try camera-free room presence sensing as cheaply as possible, with headmistress approval for the school pilot.
+Formerly split across `LEX` + `lex-wifi-csi`; everything school-related lives here now.
 
-## Cheap-first plan
+## What you get
 
-| Phase | What | Cost |
-|-------|------|------|
-| **0 (now)** | Local dashboard + software sim | €0 |
-| **1** | One ESP32-S3 SuperMini as CSI node | ~€6–9 |
-| **2** | Optional second node / Pi later | only if phase 1 works |
+1. **Host + room UI** — TX↔RX CSI heat, camera people, BLE devices, compare scorecard  
+2. **Firmware** — PlatformIO TX/RX ESP32 nodes  
+3. **Camera ↔ CSI** — YOLO person count vs RuView/ESP32 sensing-server (`:3000`)  
+4. **Phase 0** — tiny Node sim dashboard (no boards)  
+5. **RuView notes** — school UI snapshot + patch under [`docs/ruview/`](docs/ruview/)
 
-No Rust, no ESP-IDF, no Docker required for phase 0.
-
-## Quick start
+## Quick start (Mac)
 
 ```bash
 cd /path/to/LEX
-npm start
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m host.main --camera 0
 ```
 
-In a second terminal:
+Open [http://localhost:8080](http://localhost:8080).
+
+No boards yet?
 
 ```bash
-npm run sim
+python -m host.main --sim --no-camera
 ```
 
-Open http://127.0.0.1:3847
+## Boards
 
-## Check installs
+Provision to **this Mac’s LAN IP** (UDP `5005`):
 
 ```bash
-npm run check
+python tools/provision.py --list
+python tools/provision.py --port /dev/cu.usbmodemXXXX --role tx \
+  --ssid YOURSSID --password '…' --collector 192.168.x.x
+python tools/provision.py --port /dev/cu.usbmodemYYYY --role rx \
+  --ssid YOURSSID --password '…' --collector 192.168.x.x
 ```
+
+Flash: see [`docs/demo-runbook.md`](docs/demo-runbook.md).
+
+School WiFi often blocks laptop→board commands (client isolation). Calibrate over USB serial, or use a phone hotspot for laptop + boards.
+
+## Camera ↔ RuView CSI
+
+With RuView sensing-server on `:3000`:
+
+```bash
+python tools/camera_compare.py
+```
+
+Keys: `q` quit · `s` save row · `f` toggle faces.  
+Logs: `data/camera_compare/`.
+
+Honest rule: **camera counts people in view; CSI is presence/motion correlation**, not a precise headcount.
 
 ## Layout
 
 ```
 LEX/
-├── server/     local API + static file server
-├── web/        dashboard UI
-├── tools/      presence simulator (Python)
-└── README.md
+├── host/                 CSI collector + FastAPI room UI (:8080)
+├── firmware/tx|rx        PlatformIO board firmware
+├── tools/                provision, probes, camera_compare, phase-0 sim
+├── server/ + web/        phase-0 Node dashboard (:3847)
+├── docs/                 demo runbook, slides outline, ruview/
+├── data/                 replays / experiments / models (gitignored payloads)
+└── requirements.txt
 ```
 
-## Not this repo
+## Docs
 
-The big RuView / wifi-densepose tree stays at `/path/to/RuView`. LEX is the clean school pilot only.
+- [docs/demo-runbook.md](docs/demo-runbook.md)  
+- [docs/powerpoint-outline.md](docs/powerpoint-outline.md)  
+- [docs/ruview/](docs/ruview/) — optional RuView fork notes + school patch  
+
+## npm aliases (optional)
+
+```bash
+npm run setup      # venv + pip
+npm start          # python -m host.main
+npm run start:sim  # synthetic CSI, no camera
+npm run compare    # camera ↔ RuView CSI window
+npm run phase0     # tiny Node dashboard
+```

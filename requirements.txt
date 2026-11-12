@@ -1,0 +1,13 @@
+# LEX — one install for host UI, CSI boards, and camera↔CSI compare
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+numpy>=1.26.0
+# full OpenCV (not headless) so tools/camera_compare.py can open a window
+opencv-python>=4.10.0
+ultralytics>=8.3.0
+pyserial>=3.5
+matplotlib>=3.9.0
+pydantic>=2.9.0
+websockets>=13.0
+python-multipart>=0.0.12
+# Face ID uses OpenCV YuNet + SFace ONNX under data/models/ (gitignored)

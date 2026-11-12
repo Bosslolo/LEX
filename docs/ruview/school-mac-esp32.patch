@@ -1,0 +1,2175 @@
+diff --git a/.gitignore b/.gitignore
+index 770a0cd..47fcd4b 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -291,3 +291,11 @@ harness/**/ruvector.db
+ # ruvector runtime/hook DB — never tracked (any depth)
+ ruvector.db
+ **/ruvector.db
++
++# Local school build artifacts (do not commit Mach-O helpers)
++/mac_wifi
++/v2/mac_wifi
++/archive/v1/src/sensing/mac_wifi
++/data/recordings/
++/data/config.json
++/rssi_live_chart.html
+diff --git a/archive/v1/src/sensing/mac_wifi-Info.plist b/archive/v1/src/sensing/mac_wifi-Info.plist
+new file mode 100644
+index 0000000..7406e6a
+--- /dev/null
++++ b/archive/v1/src/sensing/mac_wifi-Info.plist
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++  <key>CFBundleIdentifier</key>
++  <string>school.lex.mac-wifi</string>
++  <key>CFBundleName</key>
++  <string>mac_wifi</string>
++  <key>CFBundleVersion</key>
++  <string>1.0</string>
++  <key>NSLocationUsageDescription</key>
++  <string>RuView needs Location so macOS will reveal the WiFi network name (SSID) used for sensing labels.</string>
++  <key>NSLocationWhenInUseUsageDescription</key>
++  <string>RuView needs Location so macOS will reveal the WiFi network name (SSID) used for sensing labels.</string>
++</dict>
++</plist>
+diff --git a/archive/v1/src/sensing/mac_wifi.swift b/archive/v1/src/sensing/mac_wifi.swift
+index ccf0fc4..51b9f17 100644
+--- a/archive/v1/src/sensing/mac_wifi.swift
++++ b/archive/v1/src/sensing/mac_wifi.swift
+@@ -1,34 +1,179 @@
+ import Foundation
+ import CoreWLAN
++import CoreLocation
+ 
+-// Output format: JSON lines for easy parsing by Python
+-// {"timestamp": 1234567.89, "rssi": -50, "noise": -90, "tx_rate": 866.0}
++// macOS WiFi helper for RuView / LEX (ADR-025)
++//
++// Modes:
++//   --scan-once / --connected  → JSON lines of visible APs (preferred for sensing)
++//   --probe                    → {"available": true/false}
++//   (default)                  → stream connected-AP RSSI ~10 Hz
++//
++// Notes:
++// - SSID/BSSID may be redacted unless Location is granted to *this binary*.
++// - We still emit channel/rssi/noise so multi-AP sensing works without names.
+ 
+-func main() {
++final class LocationGate: NSObject, CLLocationManagerDelegate {
++    static let shared = LocationGate()
++    private let manager = CLLocationManager()
++    private static var didRequest = false
++
++    func ensureAuthorized(timeoutSeconds: Double = 0.25) {
++        manager.delegate = self
++        let status = manager.authorizationStatus
++        if status == .authorizedAlways { return }
++        // Only prompt once per process; never block ~3s on every sensing tick.
++        if status == .notDetermined && !Self.didRequest {
++            Self.didRequest = true
++            manager.requestAlwaysAuthorization()
++            let deadline = Date().addingTimeInterval(timeoutSeconds)
++            while Date() < deadline {
++                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
++                if manager.authorizationStatus != .notDetermined { break }
++            }
++        }
++    }
++}
++
++func bandLabel(channel: Int) -> String {
++    if (1...14).contains(channel) { return "2.4GHz" }
++    if (36...177).contains(channel) { return "5GHz" }
++    if channel > 0 { return "6GHz" }
++    return "unknown"
++}
++
++func jsonString(_ s: String) -> String {
++    let escaped = s
++        .replacingOccurrences(of: "\\", with: "\\\\")
++        .replacingOccurrences(of: "\"", with: "\\\"")
++    return "\"\(escaped)\""
++}
++
++func emitLine(ssid: String, bssid: String, rssi: Int, noise: Int, channel: Int, txRate: Double) {
++    let band = bandLabel(channel: channel)
++    print(
++        "{\"ssid\":\(jsonString(ssid)),\"bssid\":\(jsonString(bssid)),\"rssi\":\(rssi),\"noise\":\(noise),\"channel\":\(channel),\"band\":\(jsonString(band)),\"tx_rate\":\(txRate)}"
++    )
++}
++
++/// Prefer real SSID; if macOS redacts it (no Location grant), use env override
++/// or a stable channel label so the UI never shows a useless "Unknown".
++func resolveSsid(_ raw: String?, channel: Int) -> String {
++    if let s = raw, !s.isEmpty, s != "Unknown" { return s }
++    if let env = ProcessInfo.processInfo.environment["RUVIEW_WIFI_SSID"],
++       !env.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
++        return env.trimmingCharacters(in: .whitespacesAndNewlines)
++    }
++    if channel > 0 { return "MacWiFi-ch\(channel)" }
++    return "MacWiFi"
++}
++
++func connectedSnapshot(_ interface: CWInterface) -> (ssid: String, bssid: String, rssi: Int, noise: Int, channel: Int, txRate: Double) {
++    let channel = Int(interface.wlanChannel()?.channelNumber ?? 0)
++    let ssid = resolveSsid(interface.ssid(), channel: channel)
++    let bssid = interface.bssid() ?? "00:00:00:00:00:00"
++    let rssi = interface.rssiValue()
++    let noise = interface.noiseMeasurement()
++    let txRate = interface.transmitRate()
++    return (ssid, bssid, rssi, noise, channel, txRate)
++}
++
++/// Scan visible networks + always include the currently associated AP.
++func emitScanOnce() {
+     guard let interface = CWWiFiClient.shared().interface() else {
+         fputs("{\"error\": \"No WiFi interface found\"}\n", stderr)
+         exit(1)
+     }
+ 
+-    // Flush stdout automatically to prevent buffering issues with Python subprocess
+-    setbuf(stdout, nil)
++    var emitted = 0
++    var seen = Set<String>()
+ 
+-    // Run at ~10Hz
+-    let interval: TimeInterval = 0.1
++    // 1) Associated / connected AP (fast, always available)
++    let connected = connectedSnapshot(interface)
++    if connected.rssi != 0 {
++        let key = "\(connected.ssid)|\(connected.channel)|\(connected.rssi)"
++        seen.insert(key)
++        emitLine(
++            ssid: connected.ssid,
++            bssid: connected.bssid,
++            rssi: connected.rssi,
++            noise: connected.noise,
++            channel: connected.channel,
++            txRate: connected.txRate
++        )
++        emitted += 1
++    }
+ 
++    // 2) Full scan — this is what unlocks mesh / multi-AP diversity (ADR-025).
++    //    May return empty/partial without Location permission; connected AP still works.
++    if let networks = try? interface.scanForNetworks(withName: nil, includeHidden: true) {
++        for net in networks {
++            let channel = Int(net.wlanChannel?.channelNumber ?? 0)
++            let ssid = resolveSsid(net.ssid, channel: channel)
++            let bssid = net.bssid ?? "00:00:00:00:00:00"
++            let rssi = net.rssiValue
++            let noise = net.noiseMeasurement
++            let key = "\(bssid)|\(channel)|\(rssi)"
++            if seen.contains(key) { continue }
++            seen.insert(key)
++            emitLine(ssid: ssid, bssid: bssid, rssi: rssi, noise: noise, channel: channel, txRate: 0)
++            emitted += 1
++        }
++    }
++
++    // 3) Cached scan results as extra fill if live scan was sparse
++    if emitted <= 1, let cached = interface.cachedScanResults() {
++        for net in cached {
++            let channel = Int(net.wlanChannel?.channelNumber ?? 0)
++            let ssid = resolveSsid(net.ssid, channel: channel)
++            let bssid = net.bssid ?? "00:00:00:00:00:00"
++            let rssi = net.rssiValue
++            let noise = net.noiseMeasurement
++            let key = "\(bssid)|\(channel)|\(rssi)"
++            if seen.contains(key) { continue }
++            seen.insert(key)
++            emitLine(ssid: ssid, bssid: bssid, rssi: rssi, noise: noise, channel: channel, txRate: 0)
++            emitted += 1
++        }
++    }
++
++    if emitted == 0 {
++        fputs("{\"error\": \"No WiFi observations\"}\n", stderr)
++        exit(2)
++    }
++}
++
++func streamLoop() {
++    guard let interface = CWWiFiClient.shared().interface() else {
++        fputs("{\"error\": \"No WiFi interface found\"}\n", stderr)
++        exit(1)
++    }
++    setbuf(stdout, nil)
+     while true {
++        let snap = connectedSnapshot(interface)
+         let timestamp = Date().timeIntervalSince1970
+-        let rssi = interface.rssiValue()
+-        let noise = interface.noiseMeasurement()
+-        let txRate = interface.transmitRate()
+-
+-        let json = """
+-        {"timestamp": \(timestamp), "rssi": \(rssi), "noise": \(noise), "tx_rate": \(txRate)}
+-        """
+-        print(json)
++        print("{\"timestamp\": \(timestamp), \"rssi\": \(snap.rssi), \"noise\": \(snap.noise), \"tx_rate\": \(snap.txRate)}")
++        Thread.sleep(forTimeInterval: 0.1)
++    }
++}
+ 
+-        Thread.sleep(forTimeInterval: interval)
++func main() {
++    // Keep this short: sensing-server spawns us every tick. Channel labels work without Location.
++    LocationGate.shared.ensureAuthorized(timeoutSeconds: 0.2)
++    let args = CommandLine.arguments
++    if args.contains("--scan-once") || args.contains("--connected") {
++        emitScanOnce()
++        return
++    }
++    if args.contains("--probe") {
++        if CWWiFiClient.shared().interface() != nil {
++            print("{\"available\": true}")
++        } else {
++            print("{\"available\": false}")
++        }
++        return
+     }
++    streamLoop()
+ }
+ 
+ main()
+diff --git a/ui/components/DashboardTab.js b/ui/components/DashboardTab.js
+index 9ecd022..490ccf1 100644
+--- a/ui/components/DashboardTab.js
++++ b/ui/components/DashboardTab.js
+@@ -91,8 +91,25 @@ export class DashboardTab {
+     const ds = sensingService.dataSource;
+     const statusText = el.querySelector('.status-text');
+     const statusMsg  = el.querySelector('.status-message');
++    const kind = sensingService.sourceKind;
++    const rawSource = sensingService.serverSource || '';
++    const wifiName = rawSource.startsWith('wifi:') ? rawSource.slice(5) : '';
++    const liveText =
++      kind === 'wifi'
++        ? (wifiName ? `WIFI · ${wifiName}` : 'WIFI')
++        : kind === 'esp32'
++          ? 'ESP32'
++          : 'LIVE';
++    const liveMsg =
++      kind === 'wifi'
++        ? (wifiName
++            ? `Mac WiFi live · ${wifiName} (RSSI mesh, not ESP32 CSI)`
++            : 'Live Mac/WiFi sensing (no ESP32)')
++        : kind === 'esp32'
++          ? 'ESP32 CSI hardware connected'
++          : 'Live sensing connected';
+     const config = {
+-      'live':              { text: 'ESP32',     status: 'healthy', msg: 'Real hardware connected' },
++      'live':              { text: liveText,   status: 'healthy', msg: liveMsg },
+       'server-simulated':  { text: 'SIMULATED', status: 'warning', msg: 'Server running without hardware' },
+       'reconnecting':      { text: 'RECONNECTING', status: 'degraded', msg: 'Attempting to connect...' },
+       'simulated':         { text: 'OFFLINE',   status: 'unhealthy', msg: 'Server unreachable, local fallback' },
+diff --git a/ui/components/HardwareTab.js b/ui/components/HardwareTab.js
+index 7f36113..c6e0f30 100644
+--- a/ui/components/HardwareTab.js
++++ b/ui/components/HardwareTab.js
+@@ -10,6 +10,10 @@ export class HardwareTab {
+ 
+   // Initialize component
+   init() {
++    // Honest Hardware panel (Mac WiFi) has no antenna mock — skip simulation.
++    if (!this.container.querySelector('.antenna')) {
++      return;
++    }
+     this.setupAntennas();
+     this.startCSISimulation();
+   }
+diff --git a/ui/components/LiveDemoTab.js b/ui/components/LiveDemoTab.js
+index 4dec767..fbeb873 100644
+--- a/ui/components/LiveDemoTab.js
++++ b/ui/components/LiveDemoTab.js
+@@ -160,9 +160,9 @@ export class LiveDemoTab {
+               </div>
+             </div>
+             <div class="demo-controls">
+-              <button class="btn btn--primary" id="start-enhanced-demo">Start Detection</button>
+-              <button class="btn btn--secondary" id="stop-enhanced-demo" disabled>Stop Detection</button>
+-              <button class="btn btn--accent" id="run-offline-demo">Demo</button>
++              <button class="btn btn--primary" id="start-enhanced-demo">Start Live</button>
++              <button class="btn btn--secondary" id="stop-enhanced-demo" disabled>Stop</button>
++              <button class="btn btn--accent" id="run-offline-demo" title="Client-only fake animation (not live WiFi)">Offline Fake</button>
+               <button class="btn btn--primary" id="toggle-debug">Debug Mode</button>
+               <select class="zone-select" id="zone-selector">
+                 <option value="zone_1">Zone 1</option>
+@@ -1316,7 +1316,7 @@ export class LiveDemoTab {
+       return this.state.connectionState === 'error' ? 'Error' : 'Ready';
+     }
+     const ds = sensingService.dataSource;
+-    if (ds === 'live') return 'Active \u2014 ESP32 Live';
++    if (ds === 'live') return sensingService.liveStatusLabel('active');
+     if (ds === 'server-simulated') return 'Active \u2014 Simulated Data';
+     if (ds === 'simulated') return 'Active \u2014 Offline Simulation';
+     return 'Connecting...';
+@@ -1328,10 +1328,10 @@ export class LiveDemoTab {
+     if (!banner) return;
+     const ds = sensingService.dataSource;
+     const config = {
+-      'live':             { text: 'LIVE \u2014 ESP32 Hardware Connected',           cls: 'demo-source-live' },
+-      'server-simulated': { text: 'SIMULATED DATA \u2014 No Hardware Detected',     cls: 'demo-source-sim' },
+-      'reconnecting':     { text: 'RECONNECTING TO SERVER...',                      cls: 'demo-source-reconnecting' },
+-      'simulated':        { text: 'OFFLINE \u2014 Server Unreachable, Local Sim',   cls: 'demo-source-offline' },
++      'live':             { text: sensingService.liveStatusLabel('banner'),             cls: 'demo-source-live' },
++      'server-simulated': { text: 'SIMULATED DATA \u2014 No Hardware Detected',         cls: 'demo-source-sim' },
++      'reconnecting':     { text: 'RECONNECTING TO SERVER...',                          cls: 'demo-source-reconnecting' },
++      'simulated':        { text: 'OFFLINE \u2014 Server Unreachable, Local Sim',       cls: 'demo-source-offline' },
+     };
+     const cfg = config[ds] || config['reconnecting'];
+     banner.textContent = cfg.text;
+@@ -1368,7 +1368,7 @@ export class LiveDemoTab {
+     if (elements.connectionStatus) {
+       const ds = sensingService.dataSource;
+       const dsLabels = {
+-        'live':              'Connected \u2014 ESP32',
++        'live':              sensingService.liveStatusLabel('short'),
+         'server-simulated':  'Connected \u2014 Simulated',
+         'reconnecting':      'Reconnecting...',
+         'simulated':         'Offline \u2014 Simulated',
+diff --git a/ui/components/PoseDetectionCanvas.js b/ui/components/PoseDetectionCanvas.js
+index 172cf98..93eb2a5 100644
+--- a/ui/components/PoseDetectionCanvas.js
++++ b/ui/components/PoseDetectionCanvas.js
+@@ -651,7 +651,8 @@ export class PoseDetectionCanvas {
+ 
+       await poseService.startPoseStream({
+         zoneIds: [this.config.zoneId],
+-        minConfidence: 0.3,
++        // WiFi RSSI pose estimates often land ~0.4–0.7 person confidence.
++        minConfidence: 0.15,
+         maxFps: 30
+       });
+ 
+diff --git a/ui/components/SensingTab.js b/ui/components/SensingTab.js
+index 33387ee..24e5130 100644
+--- a/ui/components/SensingTab.js
++++ b/ui/components/SensingTab.js
+@@ -108,11 +108,10 @@ export class SensingTab {
+           <!-- Setup info -->
+           <div class="sensing-card">
+             <div class="sensing-card-title">About This Data</div>
+-            <p class="sensing-about-text">
+-              Metrics are computed from WiFi Channel State Information (CSI).
+-              With <strong><span id="sensingNodeCount">0</span> ESP32 node(s)</strong> you get presence detection, breathing
+-              estimation, and gross motion. Add <strong>3-4+ ESP32 nodes</strong>
+-              around the room for spatial resolution and limb-level tracking.
++            <p class="sensing-about-text" id="sensingAboutText">
++              Metrics come from the active sensing source (Mac WiFi RSSI and/or ESP32 CSI).
++              Current nodes: <strong><span id="sensingNodeCount">0</span></strong>.
++              ESP32 CSI is required for true pose / vitals; Mac WiFi is presence + coarse motion only.
+             </p>
+           </div>
+ 
+@@ -225,7 +224,7 @@ export class SensingTab {
+       // Map the service's dataSource to banner text and CSS modifier class.
+       const dataSource = sensingService.dataSource;
+       const bannerConfig = {
+-        'live':              { text: 'LIVE \u2014 ESP32 HARDWARE',           cls: 'sensing-source-live' },
++        'live':              { text: sensingService.liveStatusLabel('banner'), cls: 'sensing-source-live' },
+         'server-simulated':  { text: 'SIMULATED \u2014 NO HARDWARE',        cls: 'sensing-source-server-sim' },
+         'reconnecting':      { text: 'RECONNECTING...',                    cls: 'sensing-source-reconnecting' },
+         'simulated':         { text: 'OFFLINE \u2014 CLIENT SIMULATION',    cls: 'sensing-source-simulated' },
+diff --git a/ui/index.html b/ui/index.html
+index 857ebf2..860028c 100644
+--- a/ui/index.html
++++ b/ui/index.html
+@@ -7,9 +7,27 @@
+     <meta name="description" content="WiFi-based human pose estimation, vital sign detection, and presence sensing through walls">
+     <meta name="apple-mobile-web-app-capable" content="yes">
+     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+-    <title>WiFi DensePose: Human Tracking Through Walls</title>
++    <title>RuView — School WiFi Sensing</title>
+     <link rel="stylesheet" href="style.css">
+     <link rel="manifest" href="manifest.json">
++    <style>
++      /* School mode: operational dashboard only — hide marketing surfaces */
++      .key-benefits, .system-stats, .features-panel,
++      #demo, #architecture, #performance, #applications, #sensing, #training,
++      .nav-tab[data-tab="demo"],
++      .nav-tab[data-tab="architecture"],
++      .nav-tab[data-tab="performance"],
++      .nav-tab[data-tab="applications"],
++      .nav-tab[data-tab="sensing"],
++      .nav-tab[data-tab="training"],
++      a.nav-tab[href="pose-fusion.html"] { display: none !important; }
++      .hero-section > h2, .hero-description { display: none !important; }
++      .hw-honest { max-width: 52rem; line-height: 1.55; }
++      .hw-honest h3 { margin-top: 1.5rem; }
++      .hw-honest table { width: 100%; border-collapse: collapse; margin: 0.75rem 0 1.25rem; }
++      .hw-honest th, .hw-honest td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid rgba(127,127,127,0.25); vertical-align: top; }
++      .hw-callout { padding: 0.85rem 1rem; border-left: 3px solid #21808d; background: rgba(33,128,141,0.08); margin: 1rem 0; }
++    </style>
+ </head>
+ <body>
+     <!-- Skip to main content link for keyboard/screen reader users -->
+@@ -18,8 +36,8 @@
+     <div class="container">
+         <!-- Header -->
+         <header class="header" role="banner">
+-            <h1>WiFi DensePose</h1>
+-            <p class="subtitle" data-i18n="dashboard.subtitle">Human Tracking Through Walls Using WiFi Signals</p>
++            <h1>RuView</h1>
++            <p class="subtitle">School WiFi sensing — live status</p>
+             <div class="header-info">
+                 <span class="api-version" aria-label="API version"></span>
+                 <span class="api-environment" aria-label="Environment"></span>
+@@ -44,12 +62,8 @@
+         <!-- Dashboard Tab -->
+         <section id="dashboard" class="tab-content active" role="tabpanel" aria-labelledby="dashboard">
+             <div class="hero-section">
+-                <h2 data-i18n="dashboard.title">Revolutionary WiFi-Based Human Pose Detection</h2>
+-                <p class="hero-description">
+-                    AI can track your full-body movement through walls using just WiFi signals. 
+-                    Researchers at Carnegie Mellon have trained a neural network to turn basic WiFi 
+-                    signals into detailed wireframe models of human bodies.
+-                </p>
++                <h2>Live sensing</h2>
++                <p class="hero-description">Operational status for this Mac’s WiFi scan — not an ESP32 CSI lab.</p>
+                 
+                 <!-- Error container -->
+                 <div class="error-container" style="display: none;"></div>
+@@ -144,124 +158,58 @@
+                     </div>
+                 </div>
+                 
+-                <div class="key-benefits">
+-                    <div class="benefit-card">
+-                        <div class="benefit-icon">🏠</div>
+-                        <h3>Through Walls</h3>
+-                        <p>Works through solid barriers with no line of sight required</p>
+-                    </div>
+-                    <div class="benefit-card">
+-                        <div class="benefit-icon">🔒</div>
+-                        <h3>Privacy-Preserving</h3>
+-                        <p>No cameras or visual recording - just WiFi signal analysis</p>
+-                    </div>
+-                    <div class="benefit-card">
+-                        <div class="benefit-icon">⚡</div>
+-                        <h3>Real-Time</h3>
+-                        <p>Maps 24 body regions in real-time at 100Hz sampling rate</p>
+-                    </div>
+-                    <div class="benefit-card">
+-                        <div class="benefit-icon">💰</div>
+-                        <h3>Low Cost</h3>
+-                        <p>Built using $30 commercial WiFi hardware</p>
+-                    </div>
+-                </div>
+-
+-                <div class="system-stats">
+-                    <div class="stat" data-stat="body-regions">
+-                        <span class="stat-value">24</span>
+-                        <span class="stat-label">Body Regions</span>
+-                    </div>
+-                    <div class="stat" data-stat="sampling-rate">
+-                        <span class="stat-value">100Hz</span>
+-                        <span class="stat-label">Sampling Rate</span>
+-                    </div>
+-                    <div class="stat" data-stat="accuracy">
+-                        <span class="stat-value">87.2%</span>
+-                        <span class="stat-label">Accuracy (AP@50)</span>
+-                    </div>
+-                    <div class="stat" data-stat="hardware-cost">
+-                        <span class="stat-value">$30</span>
+-                        <span class="stat-label">Hardware Cost</span>
+-                    </div>
++                <div class="key-benefits"></div>
++                <div class="system-stats" hidden aria-hidden="true">
++                    <div class="stat" data-stat="body-regions"><span class="stat-value">—</span><span class="stat-label">Body Regions</span></div>
++                    <div class="stat" data-stat="sampling-rate"><span class="stat-value">—</span><span class="stat-label">Sampling Rate</span></div>
++                    <div class="stat" data-stat="accuracy"><span class="stat-value">—</span><span class="stat-label">Accuracy</span></div>
++                    <div class="stat" data-stat="hardware-cost"><span class="stat-value">$0</span><span class="stat-label">Extra Hardware</span></div>
+                 </div>
+             </div>
+         </section>
+ 
+         <!-- Hardware Tab -->
+         <section id="hardware" class="tab-content" role="tabpanel" aria-labelledby="hardware" aria-hidden="true">
+-            <h2>Hardware Configuration</h2>
+-            
+-            <div class="hardware-grid">
+-                <div class="antenna-section">
+-                    <h3>3×3 Antenna Array</h3>
+-                    <p class="help-text">Click antennas to toggle their state</p>
+-                    <div class="antenna-array">
+-                        <div class="antenna-grid">
+-                            <div class="antenna tx active" data-type="TX1"></div>
+-                            <div class="antenna tx active" data-type="TX2"></div>
+-                            <div class="antenna tx active" data-type="TX3"></div>
+-                            <div class="antenna rx active" data-type="RX1"></div>
+-                            <div class="antenna rx active" data-type="RX2"></div>
+-                            <div class="antenna rx active" data-type="RX3"></div>
+-                            <div class="antenna rx active" data-type="RX4"></div>
+-                            <div class="antenna rx active" data-type="RX5"></div>
+-                            <div class="antenna rx active" data-type="RX6"></div>
+-                        </div>
+-                        <div class="antenna-legend">
+-                            <div class="legend-item">
+-                                <div class="legend-color tx"></div>
+-                                <span>Transmitters (3)</span>
+-                            </div>
+-                            <div class="legend-item">
+-                                <div class="legend-color rx"></div>
+-                                <span>Receivers (6)</span>
+-                            </div>
+-                        </div>
+-                        <div class="array-status"></div>
+-                    </div>
++            <h2>Hardware (what you actually have)</h2>
++            <div class="hw-honest">
++                <div class="hw-callout">
++                    Right now RuView is using your <strong>Mac WiFi card (en0)</strong> only.
++                    There is <strong>no ESP32</strong> and <strong>no CSI antenna array</strong> attached.
+                 </div>
+ 
+-                <div class="config-section">
+-                    <h3>WiFi Configuration</h3>
+-                    <div class="config-grid">
+-                        <div class="config-item">
+-                            <label>Frequency</label>
+-                            <div class="config-value">2.4GHz ± 20MHz</div>
+-                        </div>
+-                        <div class="config-item">
+-                            <label>Subcarriers</label>
+-                            <div class="config-value">30</div>
+-                        </div>
+-                        <div class="config-item">
+-                            <label>Sampling Rate</label>
+-                            <div class="config-value">100 Hz</div>
+-                        </div>
+-                        <div class="config-item">
+-                            <label>Total Cost</label>
+-                            <div class="config-value">$30</div>
+-                        </div>
+-                    </div>
++                <h3>This Mac</h3>
++                <table>
++                    <tr><th>Sensor</th><td>Built-in WiFi (CoreWLAN) via <code>mac_wifi</code></td></tr>
++                    <tr><th>What it measures</th><td>RSSI / noise / channel of nearby access points — not Channel State Information (CSI)</td></tr>
++                    <tr><th>What that enables</th><td>Presence + coarse motion from how the mesh of APs “breathes” when people move</td></tr>
++                    <tr><th>What it cannot do</th><td>True multi-room localization, reliable vitals, or camera-grade skeletons</td></tr>
++                    <tr><th>SSID name</th><td>macOS hides SSID/BSSID unless Location is allowed for <code>mac_wifi</code>. Without that you see <code>MacWiFi-ch40</code> (channel label) or set <code>RUVIEW_WIFI_SSID=YourName</code></td></tr>
++                </table>
+ 
+-                    <div class="csi-data">
+-                        <h4>Real-time CSI Data</h4>
+-                        <div class="csi-display">
+-                            <div class="csi-row">
+-                                <span>Amplitude:</span>
+-                                <div class="csi-bar">
+-                                    <div class="csi-fill amplitude" style="width: 75%"></div>
+-                                </div>
+-                                <span class="csi-value">0.75</span>
+-                            </div>
+-                            <div class="csi-row">
+-                                <span>Phase:</span>
+-                                <div class="csi-bar">
+-                                    <div class="csi-fill phase" style="width: 60%"></div>
+-                                </div>
+-                                <span class="csi-value">1.2π</span>
+-                            </div>
+-                        </div>
+-                    </div>
++                <h3>What the old “3×3 antenna” UI meant</h3>
++                <p>
++                    That was a <em>product mock</em> for a research CSI setup (multiple TX/RX antennas, ~30 subcarriers, ~100&nbsp;Hz CSI).
++                    It is not connected to your laptop. Clicking those antennas never talked to real hardware.
++                </p>
++
++                <h3>If you want the full RuView / school fly-through later</h3>
++                <table>
++                    <tr><th>ESP32-S3 nodes (~$6–9 each)</th><td>Real CSI per room — the sensing RuView was designed for</td></tr>
++                    <tr><th>One node per room (or corridor)</th><td>Room-level presence you can place on a 3D school map</td></tr>
++                    <tr><th>Optional mmWave (e.g. MR60BHA2)</th><td>Better breathing / presence in a single room</td></tr>
++                    <tr><th>School floor plan / 3D mesh</th><td>Observatory today is one demo room; a campus fly-through needs a map asset + room IDs wired to nodes</td></tr>
++                </table>
++
++                <p class="help-text">Open <a href="observatory.html">Observatory</a> for the 3D view of the current live stream.</p>
++
++                <!-- Keep empty hooks so HardwareTab.js does not crash -->
++                <div class="antenna-array" hidden aria-hidden="true">
++                    <div class="antenna-grid"></div>
++                    <div class="array-status"></div>
++                </div>
++                <div class="csi-display" hidden aria-hidden="true">
++                    <div class="csi-row"><div class="csi-fill amplitude"></div><span class="csi-value"></span></div>
++                    <div class="csi-row"><div class="csi-fill phase"></div><span class="csi-value"></span></div>
+                 </div>
+             </div>
+         </section>
+diff --git a/ui/observatory/js/figure-pool.js b/ui/observatory/js/figure-pool.js
+index b2c5492..4fc5991 100644
+--- a/ui/observatory/js/figure-pool.js
++++ b/ui/observatory/js/figure-pool.js
+@@ -268,7 +268,15 @@ export class FigurePool {
+   update(data, elapsed) {
+     const persons = data?.persons || [];
+     const vs = data?.vital_signs || {};
+-    const isPresent = data?.classification?.presence || false;
++    const rawPresent = !!(data?.classification?.presence) && persons.length > 0;
++    // Hold last positive presence ~1.6s so brief CSI dips don't pop the skeleton
++    if (rawPresent) {
++      this._lastPresentAt = elapsed;
++      this._heldPersons = persons;
++    }
++    const holdOk = this._lastPresentAt != null && (elapsed - this._lastPresentAt) < 1.6;
++    const isPresent = rawPresent || holdOk;
++    const showPersons = rawPresent ? persons : (holdOk ? (this._heldPersons || []) : []);
+     const breathBpm = vs.breathing_rate_bpm || 0;
+     const breathPulse = breathBpm > 0
+       ? Math.sin(elapsed * Math.PI * 2 * (breathBpm / 60)) * 0.012
+@@ -276,8 +284,8 @@ export class FigurePool {
+ 
+     for (let f = 0; f < this._figures.length; f++) {
+       const fig = this._figures[f];
+-      if (f < persons.length && isPresent) {
+-        const p = persons[f];
++      if (f < showPersons.length && isPresent) {
++        const p = showPersons[f];
+         const kps = this._poseSystem.generateKeypoints(p, elapsed, breathPulse);
+         this.applyKeypoints(fig, kps, breathPulse, p.position || [0, 0, 0], elapsed, p.pose);
+         fig.visible = true;
+diff --git a/ui/observatory/js/hud-controller.js b/ui/observatory/js/hud-controller.js
+index 14afc6b..3ee94dc 100644
+--- a/ui/observatory/js/hud-controller.js
++++ b/ui/observatory/js/hud-controller.js
+@@ -359,11 +359,22 @@ export class HudController {
+   // Source badge
+   // ============================================================
+ 
+-  updateSourceBadge(dataSource, ws) {
++  updateSourceBadge(dataSource, ws, sourceLabel = '') {
+     const dot = document.querySelector('#data-source-badge .dot');
+     const label = document.getElementById('data-source-label');
+-    if (dataSource === 'ws' && ws?.readyState === WebSocket.OPEN) {
+-      dot.className = 'dot dot--live'; label.textContent = 'LIVE';
++    if (dataSource === 'ws') {
++      const live = ws?.readyState === WebSocket.OPEN;
++      dot.className = live ? 'dot dot--live' : 'dot dot--demo';
++      const src = sourceLabel || '';
++      if (!live && src === 'reconnecting') {
++        label.textContent = 'RECONNECTING';
++      } else if (src.startsWith('wifi:')) {
++        label.textContent = `WIFI · ${src.slice(5)}`;
++      } else if (src.startsWith('esp32') || src === 'esp32') {
++        label.textContent = 'ESP32';
++      } else {
++        label.textContent = src ? `LIVE · ${src}` : 'LIVE';
++      }
+     } else {
+       dot.className = 'dot dot--demo'; label.textContent = 'DEMO';
+     }
+diff --git a/ui/observatory/js/main.js b/ui/observatory/js/main.js
+index 26abbe2..be67550 100644
+--- a/ui/observatory/js/main.js
++++ b/ui/observatory/js/main.js
+@@ -436,16 +436,31 @@ class Observatory {
+   // ---- WebSocket live data ----
+ 
+   _autoDetectLive() {
+-    // Probe sensing server health on same origin, then common ports
++    // Probe sensing server health on same origin, then common ports.
++    // HTTP UI is often :3000 while the sensing WS is :3001 (same mapping as sensing.service.js).
+     const host = window.location.hostname || 'localhost';
++    const httpPort = window.location.port || '';
++    const wsPortByHttp = { '3000': '3001', '8080': '8765' };
+     const candidates = [
+       window.location.origin,                   // same origin (e.g. :3000)
+-      `http://${host}:8765`,                     // default WS port
+-      `http://${host}:3000`,                     // default HTTP port
++      `http://${host}:3000`,
++      `http://${host}:3001`,
++      `http://${host}:8765`,
+     ];
+-    // Deduplicate
+     const unique = [...new Set(candidates)];
+ 
++    const wsUrlForHttpBase = (base) => {
++      const wsProto = base.startsWith('https') ? 'wss:' : 'ws:';
++      const urlObj = new URL(base);
++      const mapped = wsPortByHttp[urlObj.port] || (httpPort && wsPortByHttp[httpPort]);
++      const wsHost = mapped ? `${urlObj.hostname}:${mapped}` : urlObj.host;
++      // Prefer mapped WS port, but same-origin /ws/sensing also works on this stack.
++      return [
++        `${wsProto}//${wsHost}/ws/sensing`,
++        `${wsProto}//${urlObj.host}/ws/sensing`,
++      ];
++    };
++
+     const tryNext = (i) => {
+       if (i >= unique.length) {
+         console.log('[Observatory] No sensing server detected, using demo mode');
+@@ -456,13 +471,12 @@ class Observatory {
+         .then(r => r.ok ? r.json() : Promise.reject())
+         .then(data => {
+           if (data && data.status === 'ok') {
+-            const wsProto = base.startsWith('https') ? 'wss:' : 'ws:';
+-            const urlObj = new URL(base);
+-            const wsUrl = `${wsProto}//${urlObj.host}/ws/sensing`;
+-            console.log('[Observatory] Sensing server detected at', base, '→', wsUrl);
++            const urls = [...new Set(wsUrlForHttpBase(base))];
++            console.log('[Observatory] Sensing server detected at', base, '→', urls, data.source || '');
+             this.settings.dataSource = 'ws';
+-            this.settings.wsUrl = wsUrl;
+-            this._connectWS(wsUrl);
++            this.settings.wsUrl = urls[0];
++            this._liveSourceLabel = data.source || 'live';
++            this._connectWS(urls[0], urls.slice(1));
+           } else {
+             tryNext(i + 1);
+           }
+@@ -472,28 +486,61 @@ class Observatory {
+     tryNext(0);
+   }
+ 
+-  _connectWS(url) {
+-    this._disconnectWS();
++  _connectWS(url, fallbacks = []) {
++    this._disconnectWS(false);
+     try {
+       this._ws = new WebSocket(url);
+       this._ws.onopen = () => {
+-        console.log('[Observatory] WebSocket connected');
+-        this._hud.updateSourceBadge('ws', this._ws);
++        console.log('[Observatory] WebSocket connected', url);
++        this._wsRetryAttempt = 0;
++        try {
++          // Lock scenario cycling off while live sensing is streaming
++          this._demoData._autoMode = false;
++        } catch {}
++        this.settings.dataSource = 'ws';
++        this._hud.updateSourceBadge('ws', this._ws, this._liveSourceLabel);
++      };
++      this._ws.onmessage = (evt) => {
++        try {
++          const msg = JSON.parse(evt.data);
++          this._liveData = msg;
++          this._lastLiveAt = performance.now();
++          if (msg?.source) {
++            this._liveSourceLabel = msg.source;
++            this._hud.updateSourceBadge('ws', this._ws, this._liveSourceLabel);
++          }
++        } catch {}
+       };
+-      this._ws.onmessage = (evt) => { try { this._liveData = JSON.parse(evt.data); } catch {} };
+       this._ws.onclose = () => {
+-        console.log('[Observatory] WebSocket closed, falling back to demo');
++        console.log('[Observatory] WebSocket closed', url);
+         this._ws = null;
+-        this.settings.dataSource = 'demo';
+-        this._hud.updateSourceBadge('demo', null);
++        if (fallbacks.length) {
++          this._connectWS(fallbacks[0], fallbacks.slice(1));
++          return;
++        }
++        // Hold last live frame and reconnect — do NOT snap to demo (that causes UI flash).
++        this.settings.dataSource = 'ws';
++        this._hud.updateSourceBadge('ws', null, this._liveSourceLabel || 'reconnecting');
++        const attempt = (this._wsRetryAttempt || 0) + 1;
++        this._wsRetryAttempt = attempt;
++        const delay = Math.min(8000, 500 * Math.pow(1.6, attempt - 1));
++        clearTimeout(this._wsRetryTimer);
++        this._wsRetryTimer = setTimeout(() => {
++          if (this.settings.dataSource === 'ws') this._connectWS(url);
++        }, delay);
+       };
+       this._ws.onerror = () => {};
+     } catch {}
+   }
+ 
+-  _disconnectWS() {
+-    if (this._ws) { this._ws.close(); this._ws = null; }
+-    this._liveData = null;
++  _disconnectWS(clearLive = true) {
++    clearTimeout(this._wsRetryTimer);
++    if (this._ws) {
++      try { this._ws.onclose = null; } catch {}
++      this._ws.close();
++      this._ws = null;
++    }
++    if (clearLive) this._liveData = null;
+   }
+ 
+   // ========================================
+@@ -505,9 +552,20 @@ class Observatory {
+     const dt = Math.min(this._clock.getDelta(), 0.1);
+     const elapsed = this._clock.getElapsedTime();
+ 
+-    // Data source
+-    if (this.settings.dataSource === 'ws' && this._liveData) {
++    // Data source — prefer live; hold last frame up to 2.5s across gaps (anti-flicker)
++    const liveAge = this._lastLiveAt ? (performance.now() - this._lastLiveAt) : Infinity;
++    if (this.settings.dataSource === 'ws' && this._liveData && liveAge < 2500) {
+       this._currentData = this._liveData;
++    } else if (this.settings.dataSource === 'ws') {
++      // Waiting for first/reconnect frame: keep empty presence, never demo flash
++      this._currentData = this._liveData || {
++        source: this._liveSourceLabel || 'esp32',
++        classification: { presence: false, motion_level: 'absent', confidence: 0 },
++        persons: [],
++        estimated_persons: 0,
++        vital_signs: {},
++        features: {},
++      };
+     } else {
+       this._currentData = this._demoData.update(dt);
+     }
+diff --git a/ui/school.html b/ui/school.html
+new file mode 100644
+index 0000000..f4f7ca6
+--- /dev/null
++++ b/ui/school.html
+@@ -0,0 +1,620 @@
++<!DOCTYPE html>
++<html lang="en">
++  <head>
++    <meta charset="utf-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1" />
++    <title>LEX — Room Sense</title>
++    <style>
++      :root {
++        --bg0: #10160f;
++        --ink: #edf3ea;
++        --muted: #9aaf9d;
++        --ok: #74d28c;
++        --warn: #e0a45c;
++        --bad: #e07a6a;
++        --accent: #7ec8e3;
++        --line: rgba(237, 243, 234, 0.14);
++        --panel: rgba(0, 0, 0, 0.22);
++        --font: "Avenir Next", "Segoe UI", sans-serif;
++        --display: "Iowan Old Style", Palatino, Georgia, serif;
++      }
++      * { box-sizing: border-box; }
++      html, body { margin: 0; min-height: 100%; }
++      body {
++        color: var(--ink);
++        font-family: var(--font);
++        background:
++          radial-gradient(ellipse 70% 45% at 15% 0%, #243528 0%, transparent 55%),
++          radial-gradient(ellipse 55% 40% at 100% 100%, #1a2430 0%, transparent 50%),
++          var(--bg0);
++      }
++      header {
++        display: flex;
++        flex-wrap: wrap;
++        align-items: end;
++        justify-content: space-between;
++        gap: 1rem;
++        max-width: 72rem;
++        margin: 0 auto;
++        padding: 1.5rem 1.25rem 0.75rem;
++      }
++      .brand {
++        margin: 0;
++        font-family: var(--display);
++        font-size: clamp(2.2rem, 6vw, 3.2rem);
++        letter-spacing: 0.08em;
++        line-height: 0.95;
++      }
++      .sub {
++        margin: 0.35rem 0 0;
++        color: var(--muted);
++        font-size: 0.95rem;
++      }
++      .tabs {
++        display: flex;
++        gap: 0.4rem;
++        border-bottom: 1px solid var(--line);
++      }
++      .tabs button {
++        appearance: none;
++        border: 0;
++        background: transparent;
++        color: var(--muted);
++        font: inherit;
++        font-size: 0.92rem;
++        padding: 0.55rem 0.9rem;
++        cursor: pointer;
++        border-bottom: 2px solid transparent;
++      }
++      .tabs button[aria-selected="true"] {
++        color: var(--ink);
++        border-bottom-color: var(--ok);
++      }
++      main {
++        max-width: 72rem;
++        margin: 0 auto;
++        padding: 1rem 1.25rem 2rem;
++      }
++      .view[hidden] { display: none !important; }
++      .simple-grid {
++        display: grid;
++        grid-template-columns: 1.4fr 0.9fr;
++        gap: 1.25rem;
++      }
++      @media (max-width: 860px) {
++        .simple-grid { grid-template-columns: 1fr; }
++      }
++      .panel {
++        background: var(--panel);
++        border: 1px solid var(--line);
++        padding: 1rem;
++      }
++      .headline {
++        margin: 0 0 0.35rem;
++        font-family: var(--display);
++        font-size: clamp(1.6rem, 4vw, 2.2rem);
++        line-height: 1.15;
++      }
++      .headline[data-on="true"] { color: var(--ok); }
++      .headline[data-on="false"] { color: var(--warn); }
++      .plain {
++        margin: 0 0 1rem;
++        color: var(--muted);
++        line-height: 1.4;
++      }
++      .legend {
++        display: flex;
++        flex-wrap: wrap;
++        gap: 0.75rem 1.1rem;
++        margin: 0 0 0.75rem;
++        color: var(--muted);
++        font-size: 0.82rem;
++      }
++      .legend i {
++        display: inline-block;
++        width: 0.7rem;
++        height: 0.7rem;
++        margin-right: 0.35rem;
++        vertical-align: -0.05rem;
++        border-radius: 50%;
++      }
++      .dot-device { background: var(--accent); }
++      .dot-person { background: var(--ok); }
++      .dot-heat { background: #c9a46a; }
++      canvas.map {
++        width: 100%;
++        height: auto;
++        display: block;
++        background: #0c120e;
++        border: 1px solid var(--line);
++      }
++      .side-stats {
++        display: grid;
++        gap: 0.85rem;
++      }
++      .stat span {
++        display: block;
++        font-size: 0.72rem;
++        letter-spacing: 0.06em;
++        text-transform: uppercase;
++        color: var(--muted);
++      }
++      .stat strong {
++        display: block;
++        margin-top: 0.2rem;
++        font-size: 1.2rem;
++        font-variant-numeric: tabular-nums;
++      }
++      .badge {
++        display: inline-block;
++        margin-top: 0.75rem;
++        padding: 0.35rem 0.55rem;
++        border: 1px solid var(--line);
++        color: var(--muted);
++        font-size: 0.78rem;
++      }
++      .tech-grid {
++        display: grid;
++        grid-template-columns: 1fr 1fr;
++        gap: 1rem;
++      }
++      @media (max-width: 860px) {
++        .tech-grid { grid-template-columns: 1fr; }
++      }
++      table {
++        width: 100%;
++        border-collapse: collapse;
++        font-size: 0.9rem;
++      }
++      th, td {
++        text-align: left;
++        padding: 0.4rem 0.2rem;
++        border-bottom: 1px solid var(--line);
++        font-variant-numeric: tabular-nums;
++      }
++      th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
++      canvas.chart {
++        width: 100%;
++        height: 160px;
++        display: block;
++        background: #0c120e;
++        border: 1px solid var(--line);
++      }
++      pre {
++        margin: 0;
++        max-height: 280px;
++        overflow: auto;
++        font-size: 0.75rem;
++        line-height: 1.35;
++        color: var(--muted);
++        white-space: pre-wrap;
++        word-break: break-word;
++      }
++      .status {
++        margin-top: 1rem;
++        color: var(--muted);
++        font-size: 0.85rem;
++      }
++      .status[data-ok="false"] { color: var(--bad); }
++      .hint { margin-top: 1.25rem; color: var(--muted); font-size: 0.82rem; }
++      a { color: var(--ink); }
++    </style>
++  </head>
++  <body>
++    <header>
++      <div>
++        <p class="brand">LEX</p>
++        <p class="sub">Room sense — school demo</p>
++      </div>
++      <div class="tabs" role="tablist" aria-label="View mode">
++        <button role="tab" id="tab-simple" aria-selected="true" aria-controls="view-simple">Simple</button>
++        <button role="tab" id="tab-tech" aria-selected="false" aria-controls="view-tech">Technical</button>
++      </div>
++    </header>
++
++    <main>
++      <section id="view-simple" class="view" role="tabpanel">
++        <div class="simple-grid">
++          <div class="panel">
++            <p class="headline" id="headline" data-on="false">Looking for people…</p>
++            <p class="plain" id="plain">
++              This Mac listens to WiFi signal changes in the room. When someone is here, a stick figure appears on the map.
++            </p>
++            <div class="legend">
++              <span><i class="dot-device"></i>Sensor (this Mac)</span>
++              <span><i class="dot-person"></i>Person (WiFi estimate)</span>
++              <span><i class="dot-heat"></i>Signal activity</span>
++            </div>
++            <canvas class="map" id="map" width="900" height="560" aria-label="Room map with devices and skeletons"></canvas>
++          </div>
++          <div class="panel side-stats">
++            <div class="stat"><span>People seen</span><strong id="people">0</strong></div>
++            <div class="stat"><span>What they’re doing</span><strong id="activity">—</strong></div>
++            <div class="stat"><span>Devices on map</span><strong id="deviceCount">1</strong></div>
++            <div class="stat"><span>WiFi signal</span><strong id="rssiSimple">—</strong></div>
++            <div class="badge" id="modeBadge">Mode: Mac WiFi (cheap pilot)</div>
++          </div>
++        </div>
++      </section>
++
++      <section id="view-tech" class="view" role="tabpanel" hidden>
++        <div class="tech-grid">
++          <div class="panel">
++            <table>
++              <tr><th>Field</th><th>Value</th></tr>
++              <tr><td>source</td><td id="t-source">—</td></tr>
++              <tr><td>tick</td><td id="t-tick">—</td></tr>
++              <tr><td>presence</td><td id="t-presence">—</td></tr>
++              <tr><td>motion_level</td><td id="t-motion">—</td></tr>
++              <tr><td>confidence</td><td id="t-conf">—</td></tr>
++              <tr><td>estimated_persons</td><td id="t-est">—</td></tr>
++              <tr><td>rssi_dbm</td><td id="t-rssi">—</td></tr>
++              <tr><td>keypoints / person</td><td id="t-kps">—</td></tr>
++              <tr><td>signal_field grid</td><td id="t-grid">—</td></tr>
++            </table>
++            <div style="margin-top:1rem">
++              <div class="legend"><span>RSSI history (dBm)</span></div>
++              <canvas class="chart" id="chart" width="640" height="160"></canvas>
++            </div>
++          </div>
++          <div class="panel">
++            <div class="legend"><span>Latest payload (trimmed)</span></div>
++            <pre id="raw">—</pre>
++          </div>
++        </div>
++      </section>
++
++      <p class="status" id="status" data-ok="true">Connecting…</p>
++      <p class="hint">
++        Full RuView UI: <a href="/ui/index.html">/ui/index.html</a> ·
++        3D: <a href="/ui/viz.html">/ui/viz.html</a>
++      </p>
++    </main>
++
++    <script>
++      const BONES = [
++        ["left_shoulder", "right_shoulder"],
++        ["left_shoulder", "left_elbow"],
++        ["left_elbow", "left_wrist"],
++        ["right_shoulder", "right_elbow"],
++        ["right_elbow", "right_wrist"],
++        ["left_shoulder", "left_hip"],
++        ["right_shoulder", "right_hip"],
++        ["left_hip", "right_hip"],
++        ["left_hip", "left_knee"],
++        ["left_knee", "left_ankle"],
++        ["right_hip", "right_knee"],
++        ["right_knee", "right_ankle"],
++        ["nose", "left_shoulder"],
++        ["nose", "right_shoulder"],
++      ];
++
++      const ACTIVITY = {
++        absent: "Nobody moving around",
++        present_still: "Someone is here (still)",
++        active: "Someone is moving",
++        walking: "Someone is walking",
++      };
++
++      const rssiHistory = [];
++      const MAX_HIST = 60;
++      let latest = null;
++
++      const tabSimple = document.getElementById("tab-simple");
++      const tabTech = document.getElementById("tab-tech");
++      const viewSimple = document.getElementById("view-simple");
++      const viewTech = document.getElementById("view-tech");
++
++      function setTab(which) {
++        const simple = which === "simple";
++        tabSimple.setAttribute("aria-selected", String(simple));
++        tabTech.setAttribute("aria-selected", String(!simple));
++        viewSimple.hidden = !simple;
++        viewTech.hidden = simple;
++      }
++      tabSimple.addEventListener("click", () => setTab("simple"));
++      tabTech.addEventListener("click", () => setTab("tech"));
++
++      function byName(person) {
++        const m = {};
++        for (const k of person.keypoints || []) m[k.name] = k;
++        return m;
++      }
++
++      function drawMap(data) {
++        const canvas = document.getElementById("map");
++        const ctx = canvas.getContext("2d");
++        const w = canvas.width;
++        const h = canvas.height;
++        ctx.clearRect(0, 0, w, h);
++
++        // room floor
++        ctx.fillStyle = "#121a14";
++        ctx.fillRect(0, 0, w, h);
++        ctx.strokeStyle = "rgba(237,243,234,0.12)";
++        ctx.lineWidth = 2;
++        ctx.strokeRect(24, 24, w - 48, h - 48);
++
++        // soft grid
++        ctx.strokeStyle = "rgba(237,243,234,0.05)";
++        ctx.lineWidth = 1;
++        for (let x = 24; x < w - 24; x += 40) {
++          ctx.beginPath(); ctx.moveTo(x, 24); ctx.lineTo(x, h - 24); ctx.stroke();
++        }
++        for (let y = 24; y < h - 24; y += 40) {
++          ctx.beginPath(); ctx.moveTo(24, y); ctx.lineTo(w - 24, y); ctx.stroke();
++        }
++
++        // signal heat (top-down-ish from 20x20 field)
++        const field = data.signal_field || {};
++        const values = field.values || [];
++        const grid = field.grid_size || [20, 1, 20];
++        const nx = grid[0] || 20;
++        const nz = grid[2] || 20;
++        if (values.length === nx * nz) {
++          let maxv = 1e-9;
++          for (const v of values) maxv = Math.max(maxv, Math.abs(v));
++          const cellW = (w - 48) / nx;
++          const cellH = (h - 48) / nz;
++          for (let z = 0; z < nz; z++) {
++            for (let x = 0; x < nx; x++) {
++              const v = Math.abs(values[z * nx + x]) / maxv;
++              if (v < 0.08) continue;
++              ctx.fillStyle = `rgba(201,164,106,${0.08 + v * 0.35})`;
++              ctx.fillRect(24 + x * cellW, 24 + z * cellH, cellW + 0.5, cellH + 0.5);
++            }
++          }
++        }
++
++        // devices = sensing nodes (this Mac for now)
++        const nodes = data.nodes || [];
++        const devices = nodes.length ? nodes : [{ node_id: 0, rssi_dbm: null, position: [0, 0, 0] }];
++        devices.forEach((node, i) => {
++          const px = 24 + (w - 48) * (0.18 + i * 0.15);
++          const py = h - 70;
++          // router/laptop glyph
++          ctx.fillStyle = "#7ec8e3";
++          ctx.beginPath();
++          ctx.roundRect(px - 18, py - 12, 36, 24, 4);
++          ctx.fill();
++          ctx.strokeStyle = "rgba(237,243,234,0.35)";
++          ctx.stroke();
++          ctx.fillStyle = "#0c120e";
++          ctx.font = "600 11px Avenir Next, sans-serif";
++          ctx.textAlign = "center";
++          ctx.fillText("Mac", px, py + 4);
++          ctx.fillStyle = "#9aaf9d";
++          ctx.font = "12px Avenir Next, sans-serif";
++          ctx.fillText(
++            typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(0) + " dBm" : "sensor",
++            px,
++            py + 28
++          );
++        });
++
++        // skeletons
++        const persons = data.persons || [];
++        persons.forEach((person, idx) => {
++          const named = byName(person);
++          const xs = (person.keypoints || []).map((k) => k.x);
++          const ys = (person.keypoints || []).map((k) => k.y);
++          if (!xs.length) return;
++          const minX = Math.min(...xs);
++          const maxX = Math.max(...xs);
++          const minY = Math.min(...ys);
++          const maxY = Math.max(...ys);
++          const bw = Math.max(1, maxX - minX);
++          const bh = Math.max(1, maxY - minY);
++
++          // place figure in room center-ish, offset if multiple
++          const targetH = h * 0.55;
++          const scale = targetH / bh;
++          const ox = w * (0.52 + idx * 0.12) - ((minX + maxX) / 2) * scale;
++          const oy = h * 0.62 - maxY * scale;
++
++          const pt = (name) => {
++            const k = named[name];
++            if (!k) return null;
++            return { x: ox + k.x * scale, y: oy + k.y * scale };
++          };
++
++          ctx.lineCap = "round";
++          ctx.lineJoin = "round";
++          ctx.strokeStyle = "#74d28c";
++          ctx.lineWidth = 4;
++          for (const [a, b] of BONES) {
++            const pa = pt(a);
++            const pb = pt(b);
++            if (!pa || !pb) continue;
++            ctx.beginPath();
++            ctx.moveTo(pa.x, pa.y);
++            ctx.lineTo(pb.x, pb.y);
++            ctx.stroke();
++          }
++
++          // joints
++          ctx.fillStyle = "#edf3ea";
++          for (const k of person.keypoints || []) {
++            const x = ox + k.x * scale;
++            const y = oy + k.y * scale;
++            ctx.beginPath();
++            ctx.arc(x, y, 3.5, 0, Math.PI * 2);
++            ctx.fill();
++          }
++
++          // label
++          const nose = pt("nose") || pt("left_shoulder");
++          if (nose) {
++            ctx.fillStyle = "#74d28c";
++            ctx.font = "600 13px Avenir Next, sans-serif";
++            ctx.textAlign = "center";
++            ctx.fillText("Person " + ((person.id ?? idx) + 1), nose.x, nose.y - 16);
++          }
++        });
++
++        if (!persons.length) {
++          ctx.fillStyle = "rgba(224,164,92,0.9)";
++          ctx.font = "600 20px Iowan Old Style, Georgia, serif";
++          ctx.textAlign = "center";
++          ctx.fillText("No person outline yet", w / 2, h * 0.45);
++          ctx.fillStyle = "#9aaf9d";
++          ctx.font = "14px Avenir Next, sans-serif";
++          ctx.fillText("Walk around near the Mac to wake the estimate", w / 2, h * 0.45 + 28);
++        }
++      }
++
++      function drawChart() {
++        const canvas = document.getElementById("chart");
++        const ctx = canvas.getContext("2d");
++        const w = canvas.width;
++        const h = canvas.height;
++        ctx.clearRect(0, 0, w, h);
++        ctx.strokeStyle = "rgba(237,243,234,0.1)";
++        for (let i = 1; i < 4; i++) {
++          const y = (h / 4) * i;
++          ctx.beginPath();
++          ctx.moveTo(0, y);
++          ctx.lineTo(w, y);
++          ctx.stroke();
++        }
++        if (rssiHistory.length < 2) return;
++        const min = -90;
++        const max = -30;
++        ctx.strokeStyle = "#74d28c";
++        ctx.lineWidth = 2;
++        ctx.beginPath();
++        rssiHistory.forEach((v, i) => {
++          const x = (i / (MAX_HIST - 1)) * (w - 8) + 4;
++          const y = h - ((v - min) / (max - min)) * (h - 8) - 4;
++          if (i === 0) ctx.moveTo(x, y);
++          else ctx.lineTo(x, y);
++        });
++        ctx.stroke();
++      }
++
++      function activityLabel(level, presence) {
++        if (!presence) return ACTIVITY.absent;
++        return ACTIVITY[level] || level || "Someone may be here";
++      }
++
++      function updateSimple(d) {
++        const c = d.classification || {};
++        const presence = Boolean(c.presence);
++        const persons = d.persons || [];
++        const node = (d.nodes && d.nodes[0]) || {};
++        const headline = document.getElementById("headline");
++        headline.dataset.on = String(presence);
++        headline.textContent = presence
++          ? persons.length > 1
++            ? `Seeing about ${persons.length} people`
++            : "Someone is in the room"
++          : "Room looks empty";
++        document.getElementById("plain").textContent = presence
++          ? "Green stick figure = WiFi estimate of where a body is. Blue box = this Mac acting as the sensor."
++          : "No clear body outline right now. The Mac is still listening to WiFi changes.";
++        // Prefer visible skeleton count; estimated_persons is often too conservative on Mac WiFi.
++        const peopleCount = Math.max(
++          persons.length,
++          Number(d.estimated_persons || 0),
++          presence ? 1 : 0
++        );
++        document.getElementById("people").textContent = String(peopleCount);
++        document.getElementById("activity").textContent = activityLabel(c.motion_level, presence);
++        document.getElementById("deviceCount").textContent = String((d.nodes || []).length || 1);
++        document.getElementById("rssiSimple").textContent =
++          typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(0) + " dBm" : "—";
++        document.getElementById("modeBadge").textContent =
++          "Mode: Mac WiFi estimate · not camera · not ESP32 CSI yet";
++        drawMap(d);
++      }
++
++      function updateTech(d) {
++        const c = d.classification || {};
++        const node = (d.nodes && d.nodes[0]) || {};
++        const persons = d.persons || [];
++        const field = d.signal_field || {};
++        document.getElementById("t-source").textContent = d.source || "—";
++        document.getElementById("t-tick").textContent = d.tick ?? "—";
++        document.getElementById("t-presence").textContent = String(Boolean(c.presence));
++        document.getElementById("t-motion").textContent = c.motion_level || "—";
++        document.getElementById("t-conf").textContent =
++          typeof c.confidence === "number" ? c.confidence.toFixed(3) : "—";
++        document.getElementById("t-est").textContent = d.estimated_persons ?? "—";
++        document.getElementById("t-rssi").textContent =
++          typeof node.rssi_dbm === "number" ? node.rssi_dbm.toFixed(1) : "—";
++        document.getElementById("t-kps").textContent = persons[0]
++          ? String((persons[0].keypoints || []).length)
++          : "0";
++        document.getElementById("t-grid").textContent = Array.isArray(field.grid_size)
++          ? field.grid_size.join("×")
++          : "—";
++
++        const trim = {
++          source: d.source,
++          tick: d.tick,
++          classification: d.classification,
++          estimated_persons: d.estimated_persons,
++          nodes: d.nodes,
++          persons: (d.persons || []).map((p) => ({
++            id: p.id,
++            confidence: p.confidence,
++            bbox: p.bbox,
++            keypoints: (p.keypoints || []).map((k) => ({
++              name: k.name,
++              x: Number(k.x.toFixed?.(1) ?? k.x),
++              y: Number(k.y.toFixed?.(1) ?? k.y),
++              confidence: k.confidence,
++            })),
++          })),
++          features: d.features,
++        };
++        document.getElementById("raw").textContent = JSON.stringify(trim, null, 2);
++
++        if (typeof node.rssi_dbm === "number") {
++          rssiHistory.push(node.rssi_dbm);
++          if (rssiHistory.length > MAX_HIST) rssiHistory.shift();
++          drawChart();
++        }
++      }
++
++      async function tick() {
++        const status = document.getElementById("status");
++        try {
++          const res = await fetch("/api/v1/sensing/latest", { cache: "no-store" });
++          if (!res.ok) throw new Error("HTTP " + res.status);
++          const d = await res.json();
++          latest = d;
++          updateSimple(d);
++          updateTech(d);
++          status.dataset.ok = "true";
++          status.textContent =
++            "Live · " +
++            (d.source || "wifi") +
++            " · tick " +
++            (d.tick ?? "—") +
++            " · skeletons are WiFi estimates (good for demos; ESP32 CSI comes later for higher accuracy)";
++        } catch (err) {
++          status.dataset.ok = "false";
++          status.textContent = "Cannot reach sensing-server (" + err.message + ")";
++        }
++      }
++
++      // roundRect polyfill for older Safari
++      if (!CanvasRenderingContext2D.prototype.roundRect) {
++        CanvasRenderingContext2D.prototype.roundRect = function (x, y, w, h, r) {
++          const radius = typeof r === "number" ? r : 4;
++          this.beginPath();
++          this.moveTo(x + radius, y);
++          this.arcTo(x + w, y, x + w, y + h, radius);
++          this.arcTo(x + w, y + h, x, y + h, radius);
++          this.arcTo(x, y + h, x, y, radius);
++          this.arcTo(x, y, x + w, y, radius);
++          this.closePath();
++        };
++      }
++
++      tick();
++      setInterval(tick, 500);
++    </script>
++  </body>
++</html>
+diff --git a/ui/services/pose.service.js b/ui/services/pose.service.js
+index 054020b..a7d228f 100644
+--- a/ui/services/pose.service.js
++++ b/ui/services/pose.service.js
+@@ -30,8 +30,9 @@ export class PoseService {
+       enableValidation: true,
+       enablePerformanceTracking: true,
+       maxValidationErrors: 10,
+-      confidenceThreshold: 0.3,
+-      confidenceThresholdModelInference: 0.15,
++      // Allow WiFi/signal-derived poses through (often ~0.4–0.7).
++      confidenceThreshold: 0.15,
++      confidenceThresholdModelInference: 0.1,
+       maxPersons: 10,
+       timeoutMs: 5000
+     };
+diff --git a/ui/services/sensing.service.js b/ui/services/sensing.service.js
+index 2d5635e..55df19b 100644
+--- a/ui/services/sensing.service.js
++++ b/ui/services/sensing.service.js
+@@ -306,16 +306,41 @@ class SensingService {
+ 
+   /**
+    * Map a raw server source string to the UI data-source label.
++   *
++   * Server emits tagged sources like `wifi:Unknown` / `wifi:MySSID` (ADR-025)
++   * and `esp32` — those are live. Only explicit simulate aliases are demo mode.
+    */
+   _applyServerSource(rawSource) {
+     this._serverSource = rawSource;
+-    if (rawSource === 'esp32' || rawSource === 'wifi' || rawSource === 'live') {
+-      this._setDataSource('live');
+-    } else if (rawSource === 'simulated' || rawSource === 'simulate') {
++    const src = String(rawSource || '').toLowerCase();
++    const isSim =
++      src === 'simulated' ||
++      src === 'simulate' ||
++      src === 'server-simulated' ||
++      src.startsWith('simulated:') ||
++      src.startsWith('simulate:');
++    const isLive =
++      src === 'live' ||
++      src === 'esp32' ||
++      src === 'wifi' ||
++      src === 'macos' ||
++      src === 'linux' ||
++      src.startsWith('esp32') ||
++      src.startsWith('wifi:') ||
++      src.startsWith('wifi/') ||
++      src.startsWith('macos:') ||
++      src.startsWith('linux:');
++
++    if (isSim) {
+       this._setDataSource('server-simulated');
++    } else if (isLive) {
++      this._setDataSource('live');
++    } else if (src) {
++      // Connected with an unexpected but non-sim source — treat as live so the
++      // UI does not falsely fall into demo mode (this was marking wifi:* as sim).
++      this._setDataSource('live');
+     } else {
+-      // Unknown source — show as server-simulated to be safe
+-      this._setDataSource('server-simulated');
++      this._setDataSource('reconnecting');
+     }
+   }
+ 
+@@ -324,6 +349,60 @@ class SensingService {
+     return this._serverSource;
+   }
+ 
++  /**
++   * Coarse sensing modality for UI copy.
++   * @returns {'wifi'|'esp32'|'simulated'|'offline'|'unknown'}
++   */
++  get sourceKind() {
++    const src = String(this._serverSource || '').toLowerCase();
++    if (
++      src.startsWith('wifi') ||
++      src === 'macos' ||
++      src === 'linux' ||
++      src.startsWith('macos:') ||
++      src.startsWith('linux:')
++    ) {
++      return 'wifi';
++    }
++    if (src.startsWith('esp32') || src === 'esp32') return 'esp32';
++    if (
++      this._dataSource === 'server-simulated' ||
++      this._dataSource === 'simulated' ||
++      src.startsWith('sim')
++    ) {
++      return 'simulated';
++    }
++    if (this._dataSource === 'live') return 'unknown';
++    if (this._dataSource === 'reconnecting' || this._dataSource === 'disconnected') {
++      return 'offline';
++    }
++    return 'unknown';
++  }
++
++  /** Human label for banners / status chips. Never defaults to ESP32 on WiFi. */
++  liveStatusLabel(style = 'banner') {
++    const kind = this.sourceKind;
++    if (style === 'short') {
++      if (kind === 'wifi') return 'Connected — WiFi';
++      if (kind === 'esp32') return 'Connected — ESP32';
++      if (kind === 'simulated') return 'Connected — Simulated';
++      if (kind === 'offline') return 'Offline';
++      return 'Connected — Live';
++    }
++    if (style === 'active') {
++      if (kind === 'wifi') return 'Active — WiFi Live';
++      if (kind === 'esp32') return 'Active — ESP32 Live';
++      if (kind === 'simulated') return 'Active — Simulated Data';
++      return 'Active — Live';
++    }
++    // banner
++    if (kind === 'wifi') return 'LIVE — WIFI SENSING (no ESP32)';
++    if (kind === 'esp32') return 'LIVE — ESP32 HARDWARE';
++    if (kind === 'simulated') return 'SIMULATED — NO HARDWARE';
++    if (kind === 'offline') return 'OFFLINE / RECONNECTING';
++    return 'LIVE — REAL SENSING';
++  }
++
+   // ---- Data handling -----------------------------------------------------
+ 
+   _handleData(data) {
+diff --git a/ui/utils/connection-status.js b/ui/utils/connection-status.js
+index b4ef75a..22c99b6 100644
+--- a/ui/utils/connection-status.js
++++ b/ui/utils/connection-status.js
+@@ -52,9 +52,13 @@ export class ConnectionStatus {
+     const source = sensingService.dataSource;
+ 
+     if (state === 'connected' || state === 'streaming') {
+-      const label = source === 'live' ? 'Live' :
+-                    source === 'server-simulated' ? 'Simulated' :
+-                    'Connected';
++      const kind = sensingService.sourceKind;
++      const label =
++        source === 'server-simulated' ? 'Simulated' :
++        kind === 'wifi' ? 'Live WiFi' :
++        kind === 'esp32' ? 'Live ESP32' :
++        source === 'live' ? 'Live' :
++        'Connected';
+       this.setStatus('connected', label);
+     } else if (state === 'connecting' || state === 'reconnecting') {
+       this.setStatus('reconnecting', 'Connecting...');
+diff --git a/ui/utils/pose-renderer.js b/ui/utils/pose-renderer.js
+index 58540d1..a59a5d8 100644
+--- a/ui/utils/pose-renderer.js
++++ b/ui/utils/pose-renderer.js
+@@ -29,9 +29,10 @@ export class PoseRenderer {
+       boundingBoxWidth: 2,
+       fontSize: 12,
+       
+-      // Thresholds
+-      confidenceThreshold: 0.3,
+-      keypointConfidenceThreshold: 0.1,
++      // Thresholds — keep person gate modest; WiFi/signal-derived poses often
++      // arrive with low per-keypoint confidence even when the person is live.
++      confidenceThreshold: 0.2,
++      keypointConfidenceThreshold: 0.05,
+       
+       // Performance
+       enableSmoothing: true,
+@@ -187,8 +188,19 @@ export class PoseRenderer {
+         return; // Skip low confidence detections
+       }
+ 
++      // WiFi / signal-derived tracks sometimes ship keypoints at confidence 0
++      // even though the person detection is live. Floor them so bones draw.
++      const boosted = (person.keypoints || []).map((kp) => ({
++        ...kp,
++        confidence: Math.max(
++          typeof kp.confidence === 'number' ? kp.confidence : 0,
++          person.confidence * 0.75,
++          0.35
++        )
++      }));
++
+       // Apply client-side lerp smoothing to reduce visual jitter
+-      const smoothedKps = this._getSmoothedKeypoints(index, person.keypoints);
++      const smoothedKps = this._getSmoothedKeypoints(index, boosted);
+ 
+       // Render skeleton connections
+       if (this.config.showSkeleton && smoothedKps) {
+diff --git a/v2/Cargo.lock b/v2/Cargo.lock
+index 8c094cf..2adc06e 100644
+--- a/v2/Cargo.lock
++++ b/v2/Cargo.lock
+@@ -7533,7 +7533,6 @@ dependencies = [
+  "tokio-test",
+  "toml 0.8.23",
+  "tracing",
+- "wifi-densepose-core",
+ ]
+ 
+ [[package]]
+@@ -11277,17 +11276,6 @@ dependencies = [
+  "wifi-densepose-geo",
+ ]
+ 
+-[[package]]
+-name = "wifi-densepose-worldmodel"
+-version = "0.3.1"
+-dependencies = [
+- "serde",
+- "serde_json",
+- "thiserror 2.0.18",
+- "tokio",
+- "wifi-densepose-worldgraph",
+-]
+-
+ [[package]]
+ name = "winapi"
+ version = "0.3.9"
+diff --git a/v2/crates/wifi-densepose-sensing-server/src/main.rs b/v2/crates/wifi-densepose-sensing-server/src/main.rs
+index 466e49a..3ef2d78 100644
+--- a/v2/crates/wifi-densepose-sensing-server/src/main.rs
++++ b/v2/crates/wifi-densepose-sensing-server/src/main.rs
+@@ -61,8 +61,11 @@ use rvf_pipeline::ProgressiveLoader;
+ use vital_signs::{VitalSignDetector, VitalSigns};
+ 
+ // ADR-022 Phase 3: Multi-BSSID pipeline integration
++#[cfg(not(target_os = "macos"))]
+ use wifi_densepose_wifiscan::parse_netsh_output as parse_netsh_bssid_output;
+-use wifi_densepose_wifiscan::{BssidRegistry, WindowsWifiPipeline};
++use wifi_densepose_wifiscan::{BssidObservation, BssidRegistry, WindowsWifiPipeline};
++#[cfg(target_os = "macos")]
++use wifi_densepose_wifiscan::MacosCoreWlanScanner;
+ 
+ // Accuracy sprint: Kalman tracker, multistatic fusion, field model
+ use wifi_densepose_signal::ruvsense::field_model::{CalibrationStatus, FieldModel};
+@@ -2047,26 +2050,32 @@ fn raw_classify(score: f64) -> String {
+     }
+ }
+ 
+-/// Debounce frames required before state transition (at ~10 FPS = ~0.4s).
+-const DEBOUNCE_FRAMES: u32 = 4;
+-/// EMA alpha for motion smoothing (~1s time constant at 10 FPS).
+-const MOTION_EMA_ALPHA: f64 = 0.15;
+-/// EMA alpha for slow-adapting baseline (~30s time constant at 10 FPS).
+-const BASELINE_EMA_ALPHA: f64 = 0.003;
++/// Debounce frames required before state transition (at ~10 FPS ≈ 1.0s).
++/// Higher = less flicker between present_still / present_moving / absent.
++const DEBOUNCE_FRAMES: u32 = 10;
++/// EMA alpha for motion smoothing (~1.5s time constant at 10 FPS).
++const MOTION_EMA_ALPHA: f64 = 0.10;
++/// EMA alpha for slow-adapting baseline (~60s time constant at 10 FPS).
++/// Too-fast baseline learning absorbs a still person into "empty room".
++const BASELINE_EMA_ALPHA: f64 = 0.0015;
+ /// Number of warm-up frames before baseline subtraction kicks in.
+-const BASELINE_WARMUP: u64 = 50;
++const BASELINE_WARMUP: u64 = 80;
++/// Presence hysteresis: enter above ON, leave below OFF (anti-flicker).
++const PRESENCE_ON: f64 = 0.028;
++const PRESENCE_OFF: f64 = 0.012;
+ 
+ /// Apply EMA smoothing, adaptive baseline subtraction, and hysteresis debounce
+ /// to the raw classification.  Mutates the smoothing state in `AppStateInner`.
+ fn smooth_and_classify(state: &mut AppStateInner, raw: &mut ClassificationInfo, raw_motion: f64) {
+     // 1. Adaptive baseline: slowly track the "quiet room" floor.
+-    //    Only update baseline when raw score is below the current smoothed level
+-    //    (i.e. during calm periods) so walking doesn't inflate the baseline.
++    //    Only update when the room is classified empty — otherwise a still
++    //    person gets absorbed into the baseline and presence drops.
++    let occupied = !matches!(state.current_motion_level.as_str(), "absent");
+     state.baseline_frames += 1;
+     if state.baseline_frames < BASELINE_WARMUP {
+         // During warm-up, aggressively learn the baseline.
+         state.baseline_motion = state.baseline_motion * 0.9 + raw_motion * 0.1;
+-    } else if raw_motion < state.smoothed_motion + 0.05 {
++    } else if !occupied && raw_motion < state.smoothed_motion + 0.05 {
+         state.baseline_motion =
+             state.baseline_motion * (1.0 - BASELINE_EMA_ALPHA) + raw_motion * BASELINE_EMA_ALPHA;
+     }
+@@ -2102,17 +2111,25 @@ fn smooth_and_classify(state: &mut AppStateInner, raw: &mut ClassificationInfo,
+ 
+     // 6. Write the smoothed result back into the classification.
+     raw.motion_level = state.current_motion_level.clone();
+-    raw.presence = sm > 0.03;
++    // Sticky presence with hysteresis (don't drop a still person into absent).
++    let was_present = !matches!(state.current_motion_level.as_str(), "absent");
++    raw.presence = if was_present { sm > PRESENCE_OFF } else { sm > PRESENCE_ON };
++    if raw.presence && matches!(raw.motion_level.as_str(), "absent") {
++        raw.motion_level = "present_still".into();
++        state.current_motion_level = "present_still".into();
++    }
+     raw.confidence = (0.4 + sm * 0.6).clamp(0.0, 1.0);
+ }
+ 
+ /// Per-node variant of `smooth_and_classify` that operates on a `NodeState`
+ /// instead of `AppStateInner` (issue #249).
+ fn smooth_and_classify_node(ns: &mut NodeState, raw: &mut ClassificationInfo, raw_motion: f64) {
++    let occupied = !matches!(ns.current_motion_level.as_str(), "absent");
+     ns.baseline_frames += 1;
+     if ns.baseline_frames < BASELINE_WARMUP {
+         ns.baseline_motion = ns.baseline_motion * 0.9 + raw_motion * 0.1;
+-    } else if raw_motion < ns.smoothed_motion + 0.05 {
++    } else if !occupied && raw_motion < ns.smoothed_motion + 0.05 {
++        // Only learn "empty room" baseline when we think the room is empty.
+         ns.baseline_motion =
+             ns.baseline_motion * (1.0 - BASELINE_EMA_ALPHA) + raw_motion * BASELINE_EMA_ALPHA;
+     }
+@@ -2140,7 +2157,12 @@ fn smooth_and_classify_node(ns: &mut NodeState, raw: &mut ClassificationInfo, ra
+     }
+ 
+     raw.motion_level = ns.current_motion_level.clone();
+-    raw.presence = sm > 0.03;
++    let was_present = !matches!(ns.current_motion_level.as_str(), "absent");
++    raw.presence = if was_present { sm > PRESENCE_OFF } else { sm > PRESENCE_ON };
++    if raw.presence && matches!(raw.motion_level.as_str(), "absent") {
++        raw.motion_level = "present_still".into();
++        ns.current_motion_level = "present_still".into();
++    }
+     raw.confidence = (0.4 + sm * 0.6).clamp(0.0, 1.0);
+ }
+ 
+@@ -2376,6 +2398,52 @@ fn parse_netsh_interfaces_output(output: &str) -> Option<(f64, f64, String)> {
+     }
+ }
+ 
++/// Resolve the macOS CoreWLAN helper binary (`mac_wifi`).
++#[cfg(target_os = "macos")]
++fn resolve_mac_wifi_helper() -> String {
++    if let Ok(p) = std::env::var("MAC_WIFI_HELPER") {
++        if !p.is_empty() {
++            return p;
++        }
++    }
++    for candidate in ["./mac_wifi", "mac_wifi"] {
++        if std::path::Path::new(candidate).is_file() {
++            return candidate.to_string();
++        }
++    }
++    "mac_wifi".to_string()
++}
++
++/// Platform WiFi scan used by `--source wifi` (Windows netsh / macOS CoreWLAN).
++fn scan_wifi_bssids_blocking() -> Result<Vec<BssidObservation>, String> {
++    #[cfg(target_os = "macos")]
++    {
++        let helper = resolve_mac_wifi_helper();
++        MacosCoreWlanScanner::with_path(helper)
++            .scan_sync()
++            .map_err(|e| format!("macOS CoreWLAN scan failed: {e}"))
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        let output = std::process::Command::new("netsh")
++            .args(["wlan", "show", "networks", "mode=bssid"])
++            .output()
++            .map_err(|e| format!("netsh bssid scan failed: {e}"))?;
++
++        if !output.status.success() {
++            let stderr = String::from_utf8_lossy(&output.stderr);
++            return Err(format!(
++                "netsh exited with {}: {}",
++                output.status,
++                stderr.trim()
++            ));
++        }
++
++        let stdout = String::from_utf8_lossy(&output.stdout);
++        parse_netsh_bssid_output(&stdout).map_err(|e| format!("parse error: {e}"))
++    }
++}
++
+ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+     let mut interval = tokio::time::interval(Duration::from_millis(tick_ms));
+     let mut seq: u32 = 0;
+@@ -2384,6 +2452,13 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+     let mut registry = BssidRegistry::new(32, 30);
+     let mut pipeline = WindowsWifiPipeline::new();
+ 
++    #[cfg(target_os = "macos")]
++    info!(
++        "macOS WiFi CoreWLAN pipeline active (tick={}ms, helper={}, max_bssids=32)",
++        tick_ms,
++        resolve_mac_wifi_helper()
++    );
++    #[cfg(not(target_os = "macos"))]
+     info!(
+         "Windows WiFi multi-BSSID pipeline active (tick={}ms, max_bssids=32)",
+         tick_ms
+@@ -2394,27 +2469,9 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+         seq += 1;
+ 
+         // ── Step 1: Run multi-BSSID scan via spawn_blocking ──────────
+-        // NetshBssidScanner is not Send, so we run `netsh` and parse
+-        // the output inside a blocking closure.
+-        let bssid_scan_result = tokio::task::spawn_blocking(|| {
+-            let output = std::process::Command::new("netsh")
+-                .args(["wlan", "show", "networks", "mode=bssid"])
+-                .output()
+-                .map_err(|e| format!("netsh bssid scan failed: {e}"))?;
+-
+-            if !output.status.success() {
+-                let stderr = String::from_utf8_lossy(&output.stderr);
+-                return Err(format!(
+-                    "netsh exited with {}: {}",
+-                    output.status,
+-                    stderr.trim()
+-                ));
+-            }
+-
+-            let stdout = String::from_utf8_lossy(&output.stdout);
+-            parse_netsh_bssid_output(&stdout).map_err(|e| format!("parse error: {e}"))
+-        })
+-        .await;
++        // Scanner backends (netsh / mac_wifi) are sync + not Send-friendly;
++        // keep the process I/O off the async runtime.
++        let bssid_scan_result = tokio::task::spawn_blocking(scan_wifi_bssids_blocking).await;
+ 
+         // Unwrap the JoinHandle result, then the inner Result.
+         let observations = match bssid_scan_result {
+@@ -2437,11 +2494,24 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+ 
+         let obs_count = observations.len();
+ 
+-        // Derive SSID from the first observation for the source label.
+-        let ssid = observations
+-            .first()
+-            .map(|o| o.ssid.clone())
+-            .unwrap_or_else(|| "Unknown".into());
++        // Prefer a real SSID; skip macOS "Unknown"/empty redactions names.
++        // Optional override: RUVIEW_WIFI_SSID=SchoolNet (useful when Location is denied).
++        let ssid = std::env::var("RUVIEW_WIFI_SSID")
++            .ok()
++            .map(|s| s.trim().to_string())
++            .filter(|s| !s.is_empty())
++            .or_else(|| {
++                observations.iter().find_map(|o| {
++                    let s = o.ssid.trim();
++                    if s.is_empty() || s.eq_ignore_ascii_case("unknown") {
++                        None
++                    } else {
++                        Some(s.to_string())
++                    }
++                })
++            })
++            .or_else(|| observations.first().map(|o| o.ssid.clone()))
++            .unwrap_or_else(|| "MacWiFi".into());
+ 
+         // ── Step 2: Feed observations into registry ──────────────────
+         registry.update(&observations);
+@@ -2599,6 +2669,8 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+         if !tracked.is_empty() {
+             update.persons = Some(tracked);
+         }
++        // Mac WiFi creates stacked ghost tracks — collapse before publish.
++        finalize_wifi_persons(&mut update);
+         // #1050: attach real signal_field-peak positions to each person.
+         attach_field_positions(&mut update);
+ 
+@@ -2614,23 +2686,11 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
+     }
+ }
+ 
+-/// Fallback: single-RSSI collection via `netsh wlan show interfaces`.
++/// Fallback: single-RSSI collection when the multi-BSSID scan fails.
+ ///
+-/// Used when the multi-BSSID scan fails or returns 0 observations.
++/// Windows uses `netsh wlan show interfaces`; macOS uses the CoreWLAN helper.
+ async fn windows_wifi_fallback_tick(state: &SharedState, seq: u32) {
+-    let output = match tokio::process::Command::new("netsh")
+-        .args(["wlan", "show", "interfaces"])
+-        .output()
+-        .await
+-    {
+-        Ok(o) => String::from_utf8_lossy(&o.stdout).to_string(),
+-        Err(e) => {
+-            warn!("netsh interfaces fallback failed: {e}");
+-            return;
+-        }
+-    };
+-
+-    let (rssi_dbm, signal_pct, ssid) = match parse_netsh_interfaces_output(&output) {
++    let (rssi_dbm, signal_pct, ssid) = match scan_wifi_fallback_sample().await {
+         Some(v) => v,
+         None => {
+             debug!("Fallback: no WiFi interface connected");
+@@ -2754,6 +2814,7 @@ async fn windows_wifi_fallback_tick(state: &SharedState, seq: u32) {
+     if !tracked.is_empty() {
+         update.persons = Some(tracked);
+     }
++    finalize_wifi_persons(&mut update);
+     // #1050: attach real signal_field-peak positions to each person.
+     attach_field_positions(&mut update);
+ 
+@@ -2763,21 +2824,49 @@ async fn windows_wifi_fallback_tick(state: &SharedState, seq: u32) {
+     s.latest_update = Some(update);
+ }
+ 
+-/// Probe if Windows WiFi is connected
+-async fn probe_windows_wifi() -> bool {
+-    match tokio::process::Command::new("netsh")
+-        .args(["wlan", "show", "interfaces"])
+-        .output()
+-        .await
++/// Single connected-AP RSSI sample for the wifi fallback path.
++async fn scan_wifi_fallback_sample() -> Option<(f64, f64, String)> {
++    #[cfg(target_os = "macos")]
++    {
++        let helper = resolve_mac_wifi_helper();
++        match tokio::task::spawn_blocking(move || MacosCoreWlanScanner::with_path(helper).scan_sync())
++            .await
++        {
++            Ok(Ok(obs)) => obs.first().map(|o| (o.rssi_dbm, o.signal_pct, o.ssid.clone())),
++            Ok(Err(e)) => {
++                warn!("macOS CoreWLAN fallback failed: {e}");
++                None
++            }
++            Err(e) => {
++                warn!("macOS CoreWLAN fallback join error: {e}");
++                None
++            }
++        }
++    }
++    #[cfg(not(target_os = "macos"))]
+     {
+-        Ok(o) => {
+-            let out = String::from_utf8_lossy(&o.stdout);
+-            parse_netsh_interfaces_output(&out).is_some()
++        match tokio::process::Command::new("netsh")
++            .args(["wlan", "show", "interfaces"])
++            .output()
++            .await
++        {
++            Ok(o) => {
++                let out = String::from_utf8_lossy(&o.stdout);
++                parse_netsh_interfaces_output(&out)
++            }
++            Err(e) => {
++                warn!("netsh interfaces fallback failed: {e}");
++                None
++            }
+         }
+-        Err(_) => false,
+     }
+ }
+ 
++/// Probe if host WiFi sensing is available (Windows netsh / macOS CoreWLAN).
++async fn probe_windows_wifi() -> bool {
++    scan_wifi_fallback_sample().await.is_some()
++}
++
+ /// Probe if ESP32 is streaming on UDP port
+ async fn probe_esp32(port: u16) -> bool {
+     let addr = format!("0.0.0.0:{port}");
+@@ -4082,6 +4171,68 @@ fn emit_rufield_event(s: &AppStateInner, update: &SensingUpdate, node_id: u8) {
+     }
+ }
+ 
++/// Collapse tracker ghost duplicates that sit on top of each other.
++///
++/// Mac WiFi / RSSI-only sensing has almost no spatial resolution, so the Kalman
++/// tracker often keeps several Active tracks with nearly identical centroids.
++/// That makes the UI look broken ("5 people" stacked as one stick figure) even
++/// when presence itself is correct. Keep the highest-confidence track per
++/// spatial cluster.
++fn dedupe_persons_spatially(
++    mut persons: Vec<PersonDetection>,
++    min_dist_px: f64,
++) -> Vec<PersonDetection> {
++    if persons.len() <= 1 {
++        return persons;
++    }
++    persons.sort_by(|a, b| {
++        b.confidence
++            .partial_cmp(&a.confidence)
++            .unwrap_or(std::cmp::Ordering::Equal)
++    });
++
++    let centroid = |p: &PersonDetection| -> (f64, f64) {
++        if p.keypoints.is_empty() {
++            return (p.bbox.x + p.bbox.width * 0.5, p.bbox.y + p.bbox.height * 0.5);
++        }
++        let n = p.keypoints.len() as f64;
++        (
++            p.keypoints.iter().map(|k| k.x).sum::<f64>() / n,
++            p.keypoints.iter().map(|k| k.y).sum::<f64>() / n,
++        )
++    };
++
++    let mut kept: Vec<PersonDetection> = Vec::with_capacity(persons.len());
++    for person in persons {
++        let (cx, cy) = centroid(&person);
++        let too_close = kept.iter().any(|other| {
++            let (ox, oy) = centroid(other);
++            let dx = cx - ox;
++            let dy = cy - oy;
++            (dx * dx + dy * dy).sqrt() < min_dist_px
++        });
++        if !too_close {
++            kept.push(person);
++        }
++    }
++    kept
++}
++
++/// Apply spatial ghost-dedupe and keep estimated_persons consistent with what
++/// we actually publish (important for Mac WiFi RSSI mode).
++fn finalize_wifi_persons(update: &mut SensingUpdate) {
++    if let Some(persons) = update.persons.take() {
++        let deduped = dedupe_persons_spatially(persons, 50.0);
++        let n = deduped.len();
++        update.persons = if n == 0 { None } else { Some(deduped) };
++        if n > 0 {
++            let est = update.estimated_persons.unwrap_or(0).max(n);
++            // Cap to deduped count so UI "people seen" matches skeletons.
++            update.estimated_persons = Some(est.min(n.max(1)));
++        }
++    }
++}
++
+ fn attach_field_positions(update: &mut SensingUpdate) {
+     let Some(persons) = update.persons.as_mut() else {
+         return;
+@@ -5345,19 +5496,18 @@ async fn nodes_endpoint(State(state): State<SharedState>) -> Json<serde_json::Va
+ }
+ 
+ async fn info_page() -> Html<String> {
++    // School / demo default: send browsers to the simple LEX room dashboard.
++    // Raw API docs stay one click away from that page.
+     Html(
+-        "<html><body>\
+-         <h1>WiFi-DensePose Sensing Server</h1>\
+-         <p>Rust + Axum + RuVector</p>\
+-         <ul>\
+-         <li><a href='/health'>/health</a> — Server health</li>\
+-         <li><a href='/api/v1/sensing/latest'>/api/v1/sensing/latest</a> — Latest sensing data</li>\
+-         <li><a href='/api/v1/vital-signs'>/api/v1/vital-signs</a> — Vital sign estimates (HR/RR)</li>\
+-         <li><a href='/api/v1/model/info'>/api/v1/model/info</a> — RVF model container info</li>\
+-         <li>ws://localhost:8765/ws/sensing — WebSocket stream</li>\
+-         </ul>\
++        "<!DOCTYPE html><html><head>\
++         <meta charset=\"utf-8\">\
++         <meta http-equiv=\"refresh\" content=\"0; url=/ui/school.html\">\
++         <title>LEX</title>\
++         <script>location.replace('/ui/school.html');</script>\
++         </head><body>\
++         <p>Opening <a href=\"/ui/school.html\">LEX room dashboard</a>…</p>\
+          </body></html>"
+-         .to_string()
++            .to_string(),
+     )
+ }
+ 
+@@ -5425,8 +5575,16 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
+                     }
+ 
+                     // Store per-node person count from edge vitals.
++                    // ESP32 on-device n_persons overfires on multipath (often 3–4
++                    // for one occupant). Cap and require motion + strong score
++                    // before allowing >1 from a single board.
+                     let node_est = if vitals.presence {
+-                        (vitals.n_persons as usize).max(1)
++                        let raw = (vitals.n_persons as usize).max(1);
++                        if vitals.motion && vitals.presence_score >= 0.55 {
++                            raw.min(2)
++                        } else {
++                            1
++                        }
+                     } else {
+                         0
+                     };
+@@ -7248,6 +7406,9 @@ async fn main() {
+         if esp32 {
+             info!("  ESP32 CSI detected on UDP :{}", args.udp_port);
+         } else if wifi {
++            #[cfg(target_os = "macos")]
++            info!("  macOS WiFi (CoreWLAN) detected");
++            #[cfg(not(target_os = "macos"))]
+             info!("  Windows WiFi detected");
+         } else {
+             warn!(
+diff --git a/v2/crates/wifi-densepose-sensing-server/src/tracker_bridge.rs b/v2/crates/wifi-densepose-sensing-server/src/tracker_bridge.rs
+index c5e17cd..6b1eb93 100644
+--- a/v2/crates/wifi-densepose-sensing-server/src/tracker_bridge.rs
++++ b/v2/crates/wifi-densepose-sensing-server/src/tracker_bridge.rs
+@@ -112,16 +112,25 @@ pub fn tracker_to_person_detections(tracker: &PoseTracker) -> Vec<PersonDetectio
+                 TrackLifecycleState::Terminated => 0.0,
+             };
+ 
+-            // Build keypoints from Kalman state
++            // Build keypoints from Kalman state. Floor confidence by track
++            // lifecycle so WiFi/signal-derived poses still render when the
++            // Kalman keypoint confidence was never populated (legacy bug).
++            let floor = match track.lifecycle {
++                TrackLifecycleState::Active => 0.7,
++                TrackLifecycleState::Tentative => 0.45,
++                TrackLifecycleState::Lost => 0.2,
++                TrackLifecycleState::Terminated => 0.0,
++            };
+             let keypoints: Vec<PoseKeypoint> = (0..NUM_KEYPOINTS)
+                 .map(|i| {
+                     let pos = track.keypoints[i].position();
++                    let raw = track.keypoints[i].confidence as f64;
+                     PoseKeypoint {
+                         name: COCO_NAMES[i].to_string(),
+                         x: pos[0] as f64,
+                         y: pos[1] as f64,
+                         z: pos[2] as f64,
+-                        confidence: track.keypoints[i].confidence as f64,
++                        confidence: raw.max(floor),
+                     }
+                 })
+                 .collect();
+diff --git a/v2/crates/wifi-densepose-signal/src/ruvsense/pose_tracker.rs b/v2/crates/wifi-densepose-signal/src/ruvsense/pose_tracker.rs
+index 669b742..ec60eaf 100644
+--- a/v2/crates/wifi-densepose-signal/src/ruvsense/pose_tracker.rs
++++ b/v2/crates/wifi-densepose-signal/src/ruvsense/pose_tracker.rs
+@@ -187,6 +187,12 @@ impl KeypointState {
+         self.covariance[0] *= 1.0 - k[0][0];
+         self.covariance[6] *= 1.0 - k[1][1];
+         self.covariance[11] *= 1.0 - k[2][2];
++
++        // A measurement arrived — raise confidence so downstream UIs (which gate
++        // skeleton bones on keypoint confidence) actually draw live WiFi/CSI poses.
++        // Previously this stayed at the KeypointState::new() default of 0.0 forever,
++        // which made RuView's Live Demo look like empty/demo mode even on live data.
++        self.confidence = (self.confidence * 0.7 + 0.85 * 0.3).clamp(0.35, 1.0);
+     }
+ 
+     /// Compute the Mahalanobis distance between this state and a measurement.

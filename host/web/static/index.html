@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WiFi Sensing</title>
+  <link rel="stylesheet" href="/static/style.css?v=13" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header class="top">
+    <h1>WiFi Sensing</h1>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="togCsi" checked /> Radio</label>
+      <label class="toggle"><input type="checkbox" id="togCam" checked /> Camera / faces</label>
+      <label class="toggle"><input type="checkbox" id="togPhone" checked /> Devices</label>
+      <label class="toggle"><input type="checkbox" id="togTop" checked /> Top-down</label>
+      <button id="btnCalibrate">Calibrate</button>
+      <button id="btnPanel">Tools</button>
+      <button id="btnPresent" class="primary">Presenter</button>
+      <span id="modePill" class="pill">live</span>
+    </div>
+  </header>
+
+  <div class="hud-strip" id="scorecard"></div>
+
+  <main class="stage">
+    <div id="room3d" class="room3d"></div>
+    <p class="hint floating">
+      <span class="swatch tx"></span> TX ·
+      <span class="swatch rx"></span> RX ·
+      <span class="swatch phone"></span> devices (RSSI≈range) ·
+      faces = enrolled names
+    </p>
+  </main>
+
+  <aside class="drawer" id="drawer">
+    <section class="block">
+      <header>
+        <h2>Compare</h2>
+        <span id="compareMeta"></span>
+      </header>
+      <div id="compareBox" class="compare"></div>
+    </section>
+    <section class="block">
+      <header>
+        <h2>Face enroll</h2>
+        <span id="faceMeta"></span>
+      </header>
+      <img id="camPreview" class="cam-preview" src="/api/camera.mjpeg" alt="camera preview" />
+      <div class="enroll">
+        <input id="faceName" type="text" placeholder="Name (consent)" maxlength="40" />
+        <button id="btnEnroll">Enroll</button>
+      </div>
+      <div id="faceList" class="face-list"></div>
+    </section>
+    <section class="block" id="panelPhone">
+      <header>
+        <h2>Devices</h2>
+        <span id="phoneMeta"></span>
+      </header>
+      <div id="phoneList" class="phone-list"></div>
+      <div class="stats">
+        <div><label>Motion</label><strong id="statMotion">—</strong></div>
+        <div><label>Presence</label><strong id="statPresence">—</strong></div>
+        <div><label>Packets</label><strong id="statPps">—</strong></div>
+        <div><label>Camera</label><strong id="statCam">—</strong></div>
+      </div>
+    </section>
+  </aside>
+
+  <p class="legend" id="notes"></p>
+
+  <script type="module" src="/static/room3d.js?v=13"></script>
+  <script type="module" src="/static/app.js?v=13"></script>
+</body>
+</html>
