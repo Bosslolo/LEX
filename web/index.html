@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LEX</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <p class="brand">LEX</p>
+      <h1>Room sense (school pilot)</h1>
+      <p class="lede">
+        Cheap-first WiFi presence experiment — software sim now, one ESP32 later.
+      </p>
+
+      <section class="status" aria-live="polite">
+        <p class="room" id="room">—</p>
+        <p class="presence" id="presence">…</p>
+        <dl>
+          <div>
+            <dt>Confidence</dt>
+            <dd id="confidence">—</dd>
+          </div>
+          <div>
+            <dt>Motion</dt>
+            <dd id="motion">—</dd>
+          </div>
+          <div>
+            <dt>Mode</dt>
+            <dd id="mode">—</dd>
+          </div>
+          <div>
+            <dt>Updated</dt>
+            <dd id="updated">—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <p class="hint">
+        Run <code>npm start</code>, then in another terminal <code>npm run sim</code>.
+      </p>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "name": "lex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LEX — school WiFi sensing experiment (cheap-first)",
+  "scripts": {
+    "start": "node server/index.js",
+    "sim": "python3 tools/sim_presence.py",
+    "check": "node -e \"console.log('node ok', process.version)\" && python3 -c \"print('python ok')\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

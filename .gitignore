@@ -1,0 +1,26 @@
+# Dependencies / env
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+
+# Build / OS
+dist/
+build/
+.DS_Store
+*.log
+.idea/
+.vscode/
+*.swp
+
+# Hardware / firmware artifacts (add later if needed)
+*.bin
+*.elf
+*.map
+sdkconfig
+sdkconfig.old
+managed_components/
