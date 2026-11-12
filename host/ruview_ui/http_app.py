@@ -19,16 +19,13 @@ RUVIEW_UI = ROOT / "_ruview_ref" / "ui"
 
 _LOBBY_CHIP = """
 <style>
-#lex-lobby-chip{position:fixed;bottom:14px;left:14px;z-index:99999;font:600 12px/1.25 system-ui,sans-serif;
-display:flex;flex-direction:column;gap:6px;max-width:280px}
-#lex-lobby-chip a,#lex-lobby-chip span{display:inline-block;padding:10px 14px;border-radius:999px;background:#0b1220;color:#7dd3fc;
+#lex-lobby-chip{position:fixed;bottom:14px;left:14px;z-index:99999;font:600 12px/1.25 system-ui,sans-serif}
+#lex-lobby-chip a{display:inline-block;padding:10px 14px;border-radius:999px;background:#0b1220;color:#7dd3fc;
 text-decoration:none;border:1px solid rgba(125,211,252,.35);box-shadow:0 8px 24px rgba(0,0,0,.35)}
 #lex-lobby-chip a:hover{background:#111827;color:#fff}
-#lex-lobby-chip .note{border-radius:12px;color:#cbd5e1;font-weight:500;opacity:.95}
 </style>
 <div id="lex-lobby-chip">
   <a href="__LOBBY__">← LEX lobby</a>
-  <span class="note">Signal-derived · 2 LEX nodes (not a DensePose .rvf model). Avoid the orange Demo button — that invents stick figures.</span>
 </div>
 """
 
@@ -132,11 +129,15 @@ def build_http_app(hub: StateHub, *, lex_port: int = 8080) -> FastAPI:
 
     @app.get("/api/v1/pose/stats")
     async def pose_stats() -> dict:
-        frame = hub_to_sensing_update(hub.snapshot())
-        n = frame.get("estimated_persons") or 0
+        # Match pose/current — don't invent detections from radio presence alone.
+        msg = hub_to_pose_message(hub.snapshot())
+        persons = ((msg.get("data") or {}).get("pose") or {}).get("persons") or []
+        n = len(persons)
+        confs = [float(p.get("confidence") or 0) for p in persons]
+        avg = (sum(confs) / n) if n else 0.0
         return {
             "total_detections": n,
-            "average_confidence": (frame.get("classification") or {}).get("confidence") or 0,
+            "average_confidence": round(avg, 3),
             "peak_persons": n,
             "hours_analyzed": 0,
         }
@@ -146,8 +147,12 @@ def build_http_app(hub: StateHub, *, lex_port: int = 8080) -> FastAPI:
         return {"activities": []}
 
     @app.post("/api/v1/pose/calibrate")
-    async def pose_calibrate() -> dict:
-        return {"ok": True, "message": "Calibration owned by LEX /api/calibrate"}
+    async def pose_calibrate() -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"use LEX /api/calibrate (empty-room path)"}',
+            media_type="application/json",
+        )
 
     @app.get("/api/v1/pose/calibration/status")
     async def pose_cal_status() -> dict:
@@ -169,40 +174,56 @@ def build_http_app(hub: StateHub, *, lex_port: int = 8080) -> FastAPI:
     async def stream_stop() -> dict:
         return {"message": "Streaming stays on in dual mode", "status": "active"}
 
-    # ---- models / train / recording stubs (silence UI 404 spam) -----------
-    # DensePose .rvf models need 4+ CSI nodes + a trained weights file.
-    # With 2 LEX boards we stay on signal-derived mode — no fake "active model".
+    # ---- models / train / recording stubs (silence UI spam) ---------------
+    # DensePose .rvf needs 4+ CSI nodes. Return 200 "no_model" so the UI
+    # stays on Signal-Derived without MODEL-ERROR / API Request Error noise.
     @app.get("/api/v1/models")
     async def models_list() -> dict:
         return {"models": []}
 
     @app.get("/api/v1/models/active")
-    async def models_active() -> Response:
-        return Response(status_code=404, content='{"detail":"no model loaded"}', media_type="application/json")
+    async def models_active() -> dict:
+        return {"status": "no_model", "model": None, "model_id": None}
 
     @app.get("/api/v1/models/lora/profiles")
     async def lora_profiles() -> dict:
         return {"profiles": []}
 
     @app.post("/api/v1/models/load")
-    async def models_load() -> dict:
-        return {"ok": True, "model_id": "lex-csi"}
+    async def models_load() -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"no .rvf models in LEX dual mode (2-node RSSI)"}',
+            media_type="application/json",
+        )
 
     @app.post("/api/v1/models/unload")
     async def models_unload() -> dict:
-        return {"ok": True}
+        return {"ok": True, "status": "no_model"}
 
     @app.post("/api/v1/models/lora/activate")
-    async def lora_activate() -> dict:
-        return {"ok": False, "error": "LoRA not available in LEX dual mode"}
+    async def lora_activate() -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"LoRA not available in LEX dual mode"}',
+            media_type="application/json",
+        )
 
     @app.get("/api/v1/models/{model_id}")
-    async def models_get(model_id: str) -> dict:
-        return {"id": model_id, "name": model_id, "active": model_id == "lex-csi"}
+    async def models_get(model_id: str) -> Response:
+        return Response(
+            status_code=404,
+            content='{"detail":"model not found"}',
+            media_type="application/json",
+        )
 
     @app.delete("/api/v1/models/{model_id}")
-    async def models_delete(model_id: str) -> dict:
-        return {"ok": False, "error": "models are read-only in LEX dual mode"}
+    async def models_delete(model_id: str) -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"models are read-only in LEX dual mode"}',
+            media_type="application/json",
+        )
 
     @app.get("/api/v1/train/status")
     async def train_status() -> dict:
@@ -212,8 +233,12 @@ def build_http_app(hub: StateHub, *, lex_port: int = 8080) -> FastAPI:
     @app.post("/api/v1/train/stop")
     @app.post("/api/v1/train/pretrain")
     @app.post("/api/v1/train/lora")
-    async def train_noop() -> dict:
-        return {"ok": False, "error": "training disabled in LEX dual mode"}
+    async def train_noop() -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"training disabled in LEX dual mode"}',
+            media_type="application/json",
+        )
 
     @app.get("/api/v1/recording/list")
     async def recording_list() -> dict:
@@ -221,12 +246,20 @@ def build_http_app(hub: StateHub, *, lex_port: int = 8080) -> FastAPI:
 
     @app.post("/api/v1/recording/start")
     @app.post("/api/v1/recording/stop")
-    async def recording_noop() -> dict:
-        return {"ok": False, "error": "use LEX /api/record/* for captures"}
+    async def recording_noop() -> Response:
+        return Response(
+            status_code=501,
+            content='{"detail":"use LEX /api/record/* for captures"}',
+            media_type="application/json",
+        )
 
     @app.delete("/api/v1/recording/{rec_id}")
-    async def recording_delete(rec_id: str) -> dict:
-        return {"ok": False, "error": "not found"}
+    async def recording_delete(rec_id: str) -> Response:
+        return Response(
+            status_code=404,
+            content='{"detail":"not found"}',
+            media_type="application/json",
+        )
 
     @app.get("/oauth/status")
     async def oauth_status() -> dict:

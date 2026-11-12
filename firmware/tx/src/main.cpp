@@ -300,9 +300,17 @@ void sendStatus() {
 }
 
 void bleTick() {
-  if (!pScan || millis() - lastBleMs < 4000) return;
+  // Keep scans short and rare — blocking BLE starved ESP-NOW beacons (~2s/4s)
+  // and RX fell back to AP RSSI, which looked like rhythmic "motion".
+  if (!pScan || millis() - lastBleMs < 8000) return;
   lastBleMs = millis();
-  BLEScanResults* results = pScan->start(2, false);
+  // Burst a few illuminator frames before the scan blocks WiFi/BLE radio
+  for (int i = 0; i < 8; i++) {
+    beaconPayload[5]++;
+    esp_now_send(broadcastAddress, beaconPayload, sizeof(beaconPayload));
+    delay(4);
+  }
+  BLEScanResults* results = pScan->start(1, false);  // 1s (was 2s)
   std::vector<BleDev> found;
   int raw = results ? results->getCount() : 0;
   for (int i = 0; i < raw; i++) {
@@ -333,6 +341,7 @@ void setup() {
   loadConfig();
   handleSerialProvision(6000);
   Serial.printf("[TX] ssid=%s collector=%s\n", wifiSsid.c_str(), collectorIp.c_str());
+  WiFi.setSleep(false);  // keep UDP command path responsive
   connectWifi();
   udp.begin(4210);
   bool nowOk = initEspNow();
@@ -352,22 +361,31 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t lastWifiTryMs = 0;
+  // Always illuminate — ESP-NOW does not need AP association. Never block the
+  // beacon path inside connectWifi()'s 20s wait.
   if (WiFi.status() != WL_CONNECTED) {
     setLed(180, 0, 0);
-    connectWifi();
+    if (millis() - lastWifiTryMs >= 5000) {
+      lastWifiTryMs = millis();
+      WiFi.disconnect();
+      WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+    }
+  } else {
+    pollCommands();
+    updateStatusLed();
+    if (millis() - lastStatusMs > 1000) {
+      lastStatusMs = millis();
+      sendStatus();
+    }
   }
 
-  pollCommands();
-  updateStatusLed();
-
-  // ESP-NOW illuminator ~50 Hz
+  // ESP-NOW illuminator ~50 Hz (independent of WiFi uplink)
   beaconPayload[5]++;
   esp_now_send(broadcastAddress, beaconPayload, sizeof(beaconPayload));
 
-  bleTick();
-  if (millis() - lastStatusMs > 1000) {
-    lastStatusMs = millis();
-    sendStatus();
+  if (WiFi.status() == WL_CONNECTED) {
+    bleTick();
   }
   delay(20);
 }

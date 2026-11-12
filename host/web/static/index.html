@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>WiFi Sensing</title>
-  <link rel="stylesheet" href="/static/style.css?v=16" />
+  <link rel="stylesheet" href="/static/style.css?v=21" />
   <script type="importmap">
   {
     "imports": {
@@ -18,8 +18,7 @@
   <header class="top">
     <h1>WiFi Sensing</h1>
     <div class="controls">
-      <label class="toggle"><input type="checkbox" id="togCsi" checked /> Radio</label>
-      <label class="toggle"><input type="checkbox" id="togCam" checked /> Camera / faces</label>
+      <label class="toggle"><input type="checkbox" id="togCsi" checked /> Heat / motion</label>
       <label class="toggle"><input type="checkbox" id="togPhone" checked /> Devices</label>
       <label class="toggle"><input type="checkbox" id="togTop" checked /> Top-down</label>
       <button id="btnCalibrate">Calibrate</button>
@@ -34,34 +33,9 @@
 
   <main class="stage">
     <div id="room3d" class="room3d"></div>
-    <p class="hint floating">
-      <span class="swatch tx"></span> TX ·
-      <span class="swatch rx"></span> RX ·
-      <span class="swatch phone"></span> devices (RSSI≈range) ·
-      faces = enrolled names
-    </p>
   </main>
 
   <aside class="drawer" id="drawer">
-    <section class="block">
-      <header>
-        <h2>Compare</h2>
-        <span id="compareMeta"></span>
-      </header>
-      <div id="compareBox" class="compare"></div>
-    </section>
-    <section class="block">
-      <header>
-        <h2>Face enroll</h2>
-        <span id="faceMeta"></span>
-      </header>
-      <img id="camPreview" class="cam-preview" src="/api/camera.mjpeg" alt="camera preview" />
-      <div class="enroll">
-        <input id="faceName" type="text" placeholder="Name (consent)" maxlength="40" />
-        <button id="btnEnroll">Enroll</button>
-      </div>
-      <div id="faceList" class="face-list"></div>
-    </section>
     <section class="block" id="panelPhone">
       <header>
         <h2>Devices</h2>
@@ -72,14 +46,18 @@
         <div><label>Motion</label><strong id="statMotion">—</strong></div>
         <div><label>Presence</label><strong id="statPresence">—</strong></div>
         <div><label>Packets</label><strong id="statPps">—</strong></div>
-        <div><label>Camera</label><strong id="statCam">—</strong></div>
+        <div><label>Near</label><strong id="statNear">—</strong></div>
       </div>
+    </section>
+    <section class="block">
+      <p class="empty" style="padding:12px;line-height:1.45;color:#9ab">
+        Two boards = one radio link. Place TX and RX on opposite sides of the
+        seating so the path crosses where people move. Off-path corners stay quiet.
+      </p>
     </section>
   </aside>
 
-  <p class="legend" id="notes"></p>
-
-  <script type="module" src="/static/room3d.js?v=16"></script>
-  <script type="module" src="/static/app.js?v=16"></script>
+  <script type="module" src="/static/room3d.js?v=21"></script>
+  <script type="module" src="/static/app.js?v=21"></script>
 </body>
 </html>

@@ -13,16 +13,6 @@ from .protocol import CsiFrame, StatusFrame, parse_datagram
 from .state import BleDeviceView, StateHub
 
 
-def _near_side(motion: float, path_pos: float, presence: float) -> str:
-    if motion < 0.22 and presence < 0.5:
-        return "none"
-    if path_pos <= 0.35:
-        return "tx"
-    if path_pos >= 0.65:
-        return "rx"
-    return "mid"
-
-
 class LexUdpProtocol(asyncio.DatagramProtocol):
     def __init__(self, dsp: CsiDsp, hub: StateHub, on_frame: Callable | None = None) -> None:
         self.dsp = dsp
@@ -38,7 +28,21 @@ class LexUdpProtocol(asyncio.DatagramProtocol):
                 return
             ip = addr[0] if addr else ""
             if isinstance(frame, CsiFrame):
-                scores = self.dsp.push(ts, frame.amp_std, frame.phase_std, frame.subcarriers)
+                # AP RSSI fallback mixes a different source into variance and
+                # looks like rhythmic "motion" whenever ESP-NOW drops. Keep the
+                # board alive but do not feed DSP on those frames.
+                if frame.link and frame.link != "espnow":
+                    self.hub.mark_csi_packet()
+                    self.hub.update(rx_ip=ip or "", boards_ok=True, mode="live")
+                    return
+                scores = self.dsp.push(
+                    ts,
+                    frame.amp_std,
+                    frame.phase_std,
+                    frame.subcarriers,
+                    amp_mean=frame.amp_mean,
+                    rssi=frame.rssi,
+                )
                 self.hub.mark_csi_packet()
                 snap = self.hub.snapshot()
                 field = build_signal_field(
@@ -46,8 +50,9 @@ class LexUdpProtocol(asyncio.DatagramProtocol):
                     path_pos=scores.path_pos,
                     presence=scores.presence,
                     people=snap.get("people") or [],
+                    calibrating=self.dsp.calibrating,
                 )
-                side = _near_side(scores.motion, scores.path_pos, scores.presence)
+                side = scores.near_side
                 self.hub.update(
                     csi_motion=scores.motion,
                     csi_presence=scores.presence,
@@ -60,7 +65,8 @@ class LexUdpProtocol(asyncio.DatagramProtocol):
                     csi_rssi=float(frame.rssi),
                     csi_amp_mean=float(frame.amp_mean),
                     csi_amp_std=float(frame.amp_std),
-                    waterfall=self.dsp.waterfall(),
+                    # Cap waterfall — full 90×32 blew up every /ws frame
+                    waterfall=self.dsp.waterfall()[-12:],
                     signal_field={"grid_size": field["grid_size"], "values": field["values"]},
                     room_persons=field["persons"],
                     near_side=side,
@@ -73,12 +79,17 @@ class LexUdpProtocol(asyncio.DatagramProtocol):
                 devices = [
                     BleDeviceView(addr=d.addr, name=d.name, rssi=d.rssi) for d in frame.devices
                 ]
-                self.hub.update(
-                    ble_count=len(devices),
-                    devices=devices,
-                    tx_ip=ip,
-                    boards_ok=True,
-                )
+                role = (frame.role or frame.node or "").lower()
+                kwargs: dict = {
+                    "ble_count": len(devices),
+                    "devices": devices,
+                    "boards_ok": True,
+                }
+                if "rx" in role:
+                    kwargs["rx_ip"] = ip
+                else:
+                    kwargs["tx_ip"] = ip
+                self.hub.update(**kwargs)
             if self.on_frame:
                 self.on_frame(frame, addr)
         except Exception:

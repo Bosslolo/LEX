@@ -69,8 +69,19 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--udp-port", type=int, default=5005)
     parser.add_argument("--sim", action="store_true", help="Synthetic CSI/BLE for UI demos")
-    parser.add_argument("--no-camera", action="store_true")
-    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument(
+        "--camera",
+        type=int,
+        nargs="?",
+        const=0,
+        default=None,
+        help="Optional webcam index for RuView pose assist (LEX room UI is radio-only)",
+    )
+    parser.add_argument(
+        "--no-camera",
+        action="store_true",
+        help="Force camera off (default is off unless --camera is set)",
+    )
     parser.add_argument(
         "--calibrate",
         type=float,
@@ -107,8 +118,8 @@ def main() -> None:
         dsp,
         udp_port=0 if args.ruview else args.udp_port,
         enable_sim=args.sim,
-        enable_camera=not args.no_camera,
-        camera_index=args.camera,
+        enable_camera=(args.camera is not None) and not args.no_camera,
+        camera_index=0 if args.camera is None else args.camera,
         ruview_url=args.ruview,
         enable_ruview_ui=not args.no_ruview_ui and not args.ruview,
         bind_host=args.host,

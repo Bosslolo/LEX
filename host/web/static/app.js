@@ -1,38 +1,24 @@
-import { RoomScene } from "./room3d.js?v=16";
+import { RoomScene } from "./room3d.js?v=21";
 
 const state = {
   data: null,
-  layers: { csi: true, cam: true, phone: true },
+  layers: { csi: true, cam: false, phone: true },
 };
 
 const els = {
   modePill: document.getElementById("modePill"),
   scorecard: document.getElementById("scorecard"),
-  notes: document.getElementById("notes"),
   phoneMeta: document.getElementById("phoneMeta"),
   phoneList: document.getElementById("phoneList"),
   panelPhone: document.getElementById("panelPhone"),
-  compareMeta: document.getElementById("compareMeta"),
-  compareBox: document.getElementById("compareBox"),
-  faceMeta: document.getElementById("faceMeta"),
-  faceList: document.getElementById("faceList"),
-  faceName: document.getElementById("faceName"),
   drawer: document.getElementById("drawer"),
   statMotion: document.getElementById("statMotion"),
   statPresence: document.getElementById("statPresence"),
   statPps: document.getElementById("statPps"),
-  statCam: document.getElementById("statCam"),
+  statNear: document.getElementById("statNear"),
 };
 
 const room = new RoomScene(document.getElementById("room3d"));
-
-const isRuviewSkin = false; // RuView is the stock UI on :3000, not a LEX reskin
-if (isRuviewSkin) {
-  document.body.classList.add("ruview-skin");
-  const h1 = document.querySelector("header.top h1");
-  if (h1) h1.textContent = "RuView";
-  document.title = "RuView · WiFi Sensing";
-}
 
 function escapeHtml(s) {
   return String(s)
@@ -45,7 +31,14 @@ function nearLabel(side) {
   if (side === "tx") return `<span class="near-badge tx">Near TX</span>`;
   if (side === "rx") return `<span class="near-badge rx">Near RX</span>`;
   if (side === "mid") return `<span class="near-badge mid">Middle</span>`;
-  return `<span class="near-badge none">No hit</span>`;
+  return `<span class="near-badge none">Quiet</span>`;
+}
+
+function nearText(side) {
+  if (side === "tx") return "TX";
+  if (side === "rx") return "RX";
+  if (side === "mid") return "mid";
+  return "—";
 }
 
 /** Stable angle from MAC/name; RSSI → distance from room center (stronger = closer). */
@@ -60,7 +53,8 @@ function phoneMarkers(devices) {
     const ang = ((h >>> 0) % 360) * (Math.PI / 180);
     const rssi = Number(d.rssi ?? -70);
     const closeness = Math.max(0, Math.min(1, (rssi + 95) / 55));
-    const r = 5.6 - closeness * 4.0;
+    // 9×7 room — keep markers inside ~3.5 m radius
+    const r = 3.4 - closeness * 2.4;
     return {
       name: d.name || d.addr || `dev${i + 1}`,
       addr: d.addr || "",
@@ -90,54 +84,6 @@ function renderPhones(devices) {
     .join("");
 }
 
-function renderFaces(gallery) {
-  const list = gallery || [];
-  els.faceMeta.textContent = `${list.length} enrolled`;
-  if (!list.length) {
-    els.faceList.innerHTML = `<div class="empty">No faces yet — type a name and enroll.</div>`;
-    return;
-  }
-  els.faceList.innerHTML = list
-    .map(
-      (f) => `<div class="row">
-        <span>${escapeHtml(f.name)}</span>
-        <button data-del="${escapeHtml(f.name)}">Remove</button>
-      </div>`
-    )
-    .join("");
-  els.faceList.querySelectorAll("button[data-del]").forEach((btn) => {
-    btn.onclick = async () => {
-      await fetch(`/api/faces/${encodeURIComponent(btn.dataset.del)}`, { method: "DELETE" });
-    };
-  });
-}
-
-function renderCompare(c) {
-  if (!c || !Object.keys(c).length) {
-    els.compareBox.innerHTML = `<div class="empty">Waiting for camera + radio…</div>`;
-    els.compareMeta.textContent = "";
-    return;
-  }
-  els.compareMeta.textContent =
-    c.presence_agreement_pct != null ? `${c.presence_agreement_pct}% vs camera` : "no camera ref";
-  const rows = (c.rows || [])
-    .map((r) => {
-      const cls = r.vs_camera === "agree" ? "agree" : r.vs_camera === "disagree" ? "disagree" : "";
-      return `<div class="row">
-        <span>${escapeHtml(r.source)} · ${r.detects_someone ? "YES" : "no"}</span>
-        <span class="${cls}">${escapeHtml(r.vs_camera)}</span>
-      </div>`;
-    })
-    .join("");
-  const faces = (c.named_faces || []).join(", ") || "—";
-  els.compareBox.innerHTML = `
-    <div class="headline">${escapeHtml(c.headline || "")}</div>
-    ${rows}
-    <div class="row"><span>Named faces</span><strong>${escapeHtml(faces)}</strong></div>
-    <div class="row"><span>Counts cam/face/phone</span><strong>${c.camera_count}/${c.face_count}/${c.ble_count}</strong></div>
-  `;
-}
-
 function paintHud() {
   const d = state.data;
   els.panelPhone.classList.toggle("off", !state.layers.phone);
@@ -151,36 +97,20 @@ function paintHud() {
   els.statMotion.textContent = `${Math.round((d.csi_motion || 0) * 100)}%`;
   els.statPresence.textContent = d.csi_presence > 0.5 ? "YES" : "no";
   els.statPps.textContent = `${Number(d.csi_pps || 0).toFixed(0)}/s`;
-  els.statCam.textContent = d.camera_ok ? `${d.camera_count}` : "off";
-  els.notes.textContent = (d.notes || []).slice(0, 2).join(" · ");
+  els.statNear.textContent = nearText(d.near_side || "none");
 
   els.scorecard.innerHTML = `
-    <div class="chip csi"><label>Radio where</label><strong>${nearLabel(d.near_side || "none")}</strong></div>
-    <div class="chip camera"><label>Faces</label><strong>${(d.named_faces || []).join(", ") || "—"}</strong></div>
+    <div class="chip csi"><label>Where (WiFi path)</label><strong>${nearLabel(d.near_side || "none")}</strong></div>
     <div class="chip phones"><label>Devices in room</label><strong>${d.ble_count || 0}</strong></div>
-    <div class="chip"><label>Agree vs cam</label><strong>${
-      d.comparison?.presence_agreement_pct != null ? d.comparison.presence_agreement_pct + "%" : "—"
-    }</strong></div>
+    <div class="chip"><label>Motion</label><strong>${Math.round((d.csi_motion || 0) * 100)}%</strong></div>
+    <div class="chip"><label>Presence</label><strong>${d.csi_presence > 0.5 ? "yes" : "no"}</strong></div>
   `;
 
-  renderCompare(d.comparison || {});
-  renderFaces(d.face_gallery || []);
   if (state.layers.phone) renderPhones(d.devices || []);
   else els.phoneList.innerHTML = `<div class="empty">Devices layer off</div>`;
 
-  const mapped = [];
-  for (const p of d.people || []) {
-    mapped.push({
-      id: p.id,
-      source: p.source || (p.name ? "face" : "camera"),
-      name: p.name || "",
-      position: [(p.x - 0.5) * 14, 0, (p.y - 0.5) * 10],
-      motion_score: (p.conf || 0.5) * 80,
-    });
-  }
-  for (const p of d.room_persons || []) {
-    if (p.source === "csi") mapped.push(p);
-  }
+  // Radio / WiFi motion markers only — no camera people
+  const mapped = (d.room_persons || []).filter((p) => p.source === "csi");
 
   room.setLayers(state.layers);
   room.update({
@@ -197,15 +127,31 @@ function connect() {
     state.data = JSON.parse(ev.data);
     paintHud();
   };
-  ws.onclose = () => setTimeout(connect, 1000);
+  ws.onclose = () => {
+    state.data = null;
+    if (els.modePill) els.modePill.textContent = "reconnecting";
+    room.update({
+      csi_motion: 0,
+      csi_presence: 0,
+      near_side: "none",
+      room_persons: [],
+      phone_markers: [],
+      signal_field: { values: [] },
+    });
+    paintHud();
+    setTimeout(connect, 1000);
+  };
+  ws.onerror = () => {
+    try {
+      ws.close();
+    } catch (_) {
+      /* ignore */
+    }
+  };
 }
 
 document.getElementById("togCsi").onchange = (e) => {
   state.layers.csi = e.target.checked;
-  paintHud();
-};
-document.getElementById("togCam").onchange = (e) => {
-  state.layers.cam = e.target.checked;
   paintHud();
 };
 document.getElementById("togPhone").onchange = (e) => {
@@ -215,27 +161,25 @@ document.getElementById("togPhone").onchange = (e) => {
 document.getElementById("togTop").onchange = (e) => room.setTopDown(e.target.checked);
 document.getElementById("btnCalibrate").onclick = async () => {
   els.modePill.textContent = "calibrating";
-  await fetch("/api/calibrate?seconds=20", { method: "POST" });
+  try {
+    await fetch("/api/calibrate?seconds=20", { method: "POST" });
+  } catch (_) {
+    els.modePill.textContent = "calibrate failed";
+  }
 };
 document.getElementById("btnPresent").onclick = () => document.body.classList.toggle("presenter");
 document.getElementById("btnPanel").onclick = () => els.drawer.classList.toggle("open");
 document.getElementById("btnLobby").onclick = async () => {
-  await fetch("/api/mode", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "lobby" }),
-  });
+  try {
+    await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "lobby" }),
+    });
+  } catch (_) {
+    /* still leave the page */
+  }
   location.href = "/";
-};
-document.getElementById("btnEnroll").onclick = async () => {
-  const name = els.faceName.value.trim();
-  if (!name) return;
-  const body = new FormData();
-  body.append("name", name);
-  const res = await fetch("/api/faces/enroll", { method: "POST", body });
-  const data = await res.json();
-  if (!data.ok) alert(data.error || "enroll failed");
-  else els.faceName.value = "";
 };
 
 connect();

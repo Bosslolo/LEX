@@ -34,10 +34,10 @@ def _keypoints(cx: float, cy: float, *, sway: float = 0.0) -> list[dict[str, flo
 
 
 def _person_from_camera(p: dict[str, Any], i: int) -> dict[str, Any]:
-    """Map LEX camera person box (normalized-ish) into canvas keypoints."""
+    """Map LEX camera person box into a bbox-only detection (no invented limbs)."""
     try:
-        x = float(p.get("x") or 0.5)
-        y = float(p.get("y") or 0.5)
+        x = float(p.get("x")) if p.get("x") is not None else 0.5
+        y = float(p.get("y")) if p.get("y") is not None else 0.5
         conf = float(p.get("conf") or 0.7)
     except (TypeError, ValueError):
         x, y, conf = 0.5, 0.5, 0.7
@@ -48,7 +48,7 @@ def _person_from_camera(p: dict[str, Any], i: int) -> dict[str, Any]:
         "person_id": f"cam_{p.get('id', i)}",
         "confidence": max(0.55, min(0.98, conf)),
         "bbox": {"x": cx - 45, "y": cy - 95, "width": 90, "height": 200},
-        "keypoints": _keypoints(cx, cy, sway=0.35),
+        "keypoints": [],  # bbox only — no fake COCO skeleton from a center point
         "zone_id": "school-room",
         "name": name,
     }
@@ -61,9 +61,7 @@ def hub_to_pose_message(snap: dict[str, Any]) -> dict[str, Any]:
     active = str(cls.get("motion_level") or "") == "active"
     persons: list[dict[str, Any]] = []
 
-    # Stick figures ONLY from the LEX camera. Inventing COCO skeletons from
-    # 2-node CSI made Live Demo look like the orange "Demo" button was on.
-    # CSI presence still drives Sensing tab / classification — not fake limbs.
+    # Camera bboxes only. Never invent stick figures from 2-node RSSI.
     cam_people = snap.get("people") or []
     if cam_people:
         persons = [
@@ -77,19 +75,22 @@ def hub_to_pose_message(snap: dict[str, Any]) -> dict[str, Any]:
     if persons:
         activity = "walking" if active else "standing"
     elif presence:
-        activity = "present_no_pose"  # CSI says someone, no camera bbox yet
+        activity = "present_no_pose"  # radio says someone, no camera bbox
+
+    # Only claim signal_derived when we actually have detections; empty frames
+    # with that badge over-promise ("keypoints from CSI").
+    pose_source = "signal_derived" if persons else "none"
 
     return {
         "type": "pose_data",
         "timestamp": now,
         "zone_id": "school-room",
-        # RuView UI only understands signal_derived | model_inference
-        "pose_source": "signal_derived",
+        "pose_source": pose_source,
         "data": {
             "pose": {"persons": persons},
-            "confidence": float(cls.get("confidence") or 0.0),
+            "confidence": float(cls.get("confidence") or 0.0) if persons else 0.0,
             "activity": activity,
-            "pose_source": "signal_derived",
+            "pose_source": pose_source,
             "csi_presence": presence,
             "metadata": {
                 "frame_id": f"lex_{int(time.time() * 1000)}",

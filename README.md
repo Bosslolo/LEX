@@ -1,4 +1,4 @@
-# LEX
+﻿# LEX
 
 School WiFi sensing pilot — **one repo** for CSI boards, room UI, camera baseline, and RuView notes.
 
@@ -74,6 +74,8 @@ LEX/
 
 ## Docs
 
+- [docs/sensing-csi-report.md](docs/sensing-csi-report.md) — **are we using real CSI?** what we tried (RSSI vs CSI)  
+- [docs/audit-2026-11-12.md](docs/audit-2026-11-12.md) — full stack audit + fixes  
 - [docs/demo-runbook.md](docs/demo-runbook.md)  
 - [docs/powerpoint-outline.md](docs/powerpoint-outline.md)  
 - [docs/ruview/](docs/ruview/) — optional RuView fork notes + school patch  

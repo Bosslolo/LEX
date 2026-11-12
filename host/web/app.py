@@ -87,6 +87,8 @@ def create_app(
         else:
             app.state.sim_task = None
         app.state.led_sync_task = asyncio.create_task(_led_sync_loop(hub))
+        app.state.cal_poll_task = asyncio.create_task(_cal_poll_loop(dsp, hub))
+        app.state.liveness_task = asyncio.create_task(_liveness_loop(hub))
         # Push lobby + sync once boards are likely online
         asyncio.create_task(_boot_lobby(hub))
 
@@ -98,10 +100,43 @@ def create_app(
         cam = getattr(app.state, "camera", None)
         if cam:
             cam.stop()
-        for name in ("sim_task", "ruview_task", "ruview_ui_task", "led_sync_task"):
+        for name in (
+            "sim_task",
+            "ruview_task",
+            "ruview_ui_task",
+            "led_sync_task",
+            "cal_poll_task",
+            "liveness_task",
+        ):
             task = getattr(app.state, name, None)
             if task:
                 task.cancel()
+
+    async def _cal_poll_loop(csi_dsp: CsiDsp, state_hub: StateHub) -> None:
+        """Finish empty-room calibrate even with no /ws client open."""
+        while True:
+            try:
+                if csi_dsp.poll_calibration():
+                    state_hub.update(
+                        csi_calibrating=csi_dsp.calibrating,
+                        csi_calibrated=csi_dsp.calibrated,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+    async def _liveness_loop(state_hub: StateHub) -> None:
+        """Decay stale CSI even when only RuView :3000 is open (no LEX /ws)."""
+        while True:
+            try:
+                state_hub.tick_liveness()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+            await asyncio.sleep(0.25)
 
     async def _boot_lobby(state_hub: StateHub) -> None:
         await asyncio.sleep(2.0)
@@ -183,16 +218,25 @@ def create_app(
         return {"ok": True, "mode": mode, "sent": sent}
 
     @app.post("/api/calibrate")
-    async def api_calibrate(seconds: float = 60.0) -> dict:
-        dsp.start_calibration(duration_s=seconds)
+    async def api_calibrate(seconds: float = 20.0) -> dict:
+        try:
+            sec = float(seconds)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "seconds must be a number"}
+        if not (1.0 <= sec <= 300.0):
+            return {"ok": False, "error": "seconds must be between 1 and 300"}
+        dsp.start_calibration(duration_s=sec)
         hub.update(csi_calibrating=True, csi_calibrated=False)
         snap = hub.snapshot()
-        led = await notify_calibrate(
-            tx_ip=snap.get("tx_ip") or None,
-            rx_ip=snap.get("rx_ip") or None,
-            seconds=seconds,
-        )
-        return {"ok": True, "seconds": seconds, "led_blink": led}
+        try:
+            led = await notify_calibrate(
+                tx_ip=snap.get("tx_ip") or None,
+                rx_ip=snap.get("rx_ip") or None,
+                seconds=sec,
+            )
+        except OSError as exc:
+            return {"ok": True, "seconds": sec, "led_blink": {}, "warn": str(exc)}
+        return {"ok": True, "seconds": sec, "led_blink": led}
 
     @app.post("/api/record/start")
     async def record_start(name: str = "demo") -> dict:

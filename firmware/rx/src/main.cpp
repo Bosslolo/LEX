@@ -257,9 +257,12 @@ void connectWifi() {
 }
 
 void onEspNowRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
-  (void)data;
-  (void)len;
+  // Only accept LEX TX illuminator beacons (magic "LEXTX") — ignore other ESP-NOW.
   if (!info || !info->rx_ctrl) return;
+  if (len < 5 || !data) return;
+  if (!(data[0] == 'L' && data[1] == 'E' && data[2] == 'X' && data[3] == 'T' && data[4] == 'X')) {
+    return;
+  }
   lastEspRssi = info->rx_ctrl->rssi;
   lastEspMs = millis();
 }
@@ -287,20 +290,30 @@ float stdN(const float* a, int n, float m) {
 void sendCsi() {
   if (WiFi.status() != WL_CONNECTED) return;
 
-  // Prefer ESP-NOW link RSSI; fall back to AP RSSI only if link silent
-  float rssi = (millis() - lastEspMs < 500) ? (float)lastEspRssi : (float)WiFi.RSSI();
-  rssiHist[histIdx++] = rssi;
-  if (histIdx >= HIST) {
-    histIdx = 0;
-    histFilled = true;
+  // Single age sample so rssi/link cannot disagree mid-function
+  uint32_t now = millis();
+  uint32_t age = now - lastEspMs;
+  bool espOk = age < 500;
+  float rssi = espOk ? (float)lastEspRssi : (float)WiFi.RSSI();
+  const char* link = espOk ? "espnow" : "ap-fallback";
+
+  // Only advance the sensing history on real ESP-NOW samples. Re-sampling the
+  // same AP RSSI at 20 Hz crushed variance, then a resume spike looked like motion.
+  if (espOk) {
+    rssiHist[histIdx++] = rssi;
+    if (histIdx >= HIST) {
+      histIdx = 0;
+      histFilled = true;
+    }
   }
   int n = histFilled ? HIST : max(histIdx, 1);
   float m = meanN(rssiHist, n);
   float sd = stdN(rssiHist, n, m);
 
+  // Honest RSSI history window for the host waterfall (no fake sine floor)
   float sc[32];
   for (int i = 0; i < 32; i++) {
-    sc[i] = 40.0f + rssiHist[(histIdx + i) % n] + 2.0f * sinf(i * 0.4f);
+    sc[i] = rssiHist[(histIdx + i) % n];
   }
 
   JsonDocument doc;
@@ -309,14 +322,15 @@ void sendCsi() {
   doc["rssi"] = rssi;
   doc["amp_mean"] = fabsf(m);
   doc["amp_std"] = sd;
-  doc["phase_std"] = sd * 0.5f;
-  doc["link"] = (millis() - lastEspMs < 500) ? "espnow" : "ap-fallback";
+  doc["phase_std"] = 0.0f;  // not measured — was fabricated as sd*0.5
+  doc["link"] = link;
   JsonArray arr = doc["sc"].to<JsonArray>();
   for (int i = 0; i < 32; i++) arr.add(sc[i]);
 
   char buf[768];
   size_t len = serializeJson(doc, buf, sizeof(buf));
-  udp.beginPacket(collectorIp.c_str(), collectorPort);
+  if (len == 0 || len >= sizeof(buf)) return;
+  if (!udp.beginPacket(collectorIp.c_str(), collectorPort)) return;
   udp.write((const uint8_t*)buf, len);
   udp.endPacket();
 }
@@ -341,14 +355,29 @@ void setup() {
 }
 
 void loop() {
+  static uint32_t lastWifiTryMs = 0;
+  static uint32_t lastLedMs = 0;
   if (WiFi.status() != WL_CONNECTED) {
-    setLed(180, 0, 0);
-    connectWifi();
+    // Keep red visible; only retry begin() every 5s (don't block sensing forever)
+    if (millis() - lastLedMs >= 40) {
+      lastLedMs = millis();
+      setLed(180, 0, 0);
+    }
+    if (millis() - lastWifiTryMs >= 5000) {
+      lastWifiTryMs = millis();
+      WiFi.disconnect();
+      WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+    }
+  } else {
+    pollCommands();
+    if (millis() - lastLedMs >= 33) {
+      lastLedMs = millis();
+      updateStatusLed();
+    }
+    if (millis() - lastSendMs >= 50) {
+      lastSendMs = millis();
+      sendCsi();
+    }
   }
-  pollCommands();
-  updateStatusLed();
-  if (millis() - lastSendMs >= 50) {
-    lastSendMs = millis();
-    sendCsi();
-  }
+  delay(5);
 }

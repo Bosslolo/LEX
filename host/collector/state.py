@@ -79,6 +79,7 @@ class StateHub:
         self._record_fh = None
         self._csi_packet_times: list[float] = []
         self._last_csi_ts: float = 0.0
+        self._last_liveness_ts: float = 0.0
 
     def update(self, **kwargs: Any) -> LiveState:
         with self._lock:
@@ -108,6 +109,10 @@ class StateHub:
     def tick_liveness(self) -> None:
         """Decay CSI HUD/field when boards go quiet so the room doesn't freeze."""
         now = time.time()
+        # One decay step regardless of how many /ws clients call this.
+        if now - self._last_liveness_ts < 0.2:
+            return
+        self._last_liveness_ts = now
         with self._lock:
             cutoff = now - 2.0
             self._csi_packet_times = [t for t in self._csi_packet_times if t >= cutoff]
@@ -136,7 +141,11 @@ class StateHub:
 
     def start_recording(self, name: str | None = None) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = self.replay_dir / f"{name or 'demo'}-{stamp}.jsonl"
+        raw = "".join(c for c in str(name or "demo") if c.isalnum() or c in "-_")[:48]
+        safe = raw or "demo"
+        path = (self.replay_dir / f"{safe}-{stamp}.jsonl").resolve()
+        if not str(path).startswith(str(self.replay_dir.resolve())):
+            path = self.replay_dir / f"demo-{stamp}.jsonl"
         with self._lock:
             if self._record_fh:
                 self._record_fh.close()
@@ -153,21 +162,28 @@ class StateHub:
 
     @staticmethod
     def _scorecard(s: LiveState) -> dict[str, str]:
+        # LEX room UI is radio-first; camera/faces only win when actually running.
         if s.named_faces:
             presence = "faces"
-        elif s.camera_count > 0:
+        elif s.camera_ok and s.camera_count > 0:
             presence = "camera"
-        elif s.csi_motion > 0.35:
-            presence = "csi"
+        elif s.csi_presence > 0.5 or s.csi_motion > 0.35:
+            presence = "wifi-path"
         elif s.ble_count > 0:
             presence = "phones"
         else:
-            presence = "csi" if s.csi_calibrated else "—"
+            presence = "wifi-path" if s.csi_calibrated else "—"
+        if s.camera_ok and s.camera_count > 0:
+            counting = "camera"
+        elif s.csi_presence > 0.5:
+            counting = "wifi-path (1 link, not a headcount)"
+        else:
+            counting = "wifi-path"
         return {
             "presence": presence,
-            "counting": "camera" if s.camera_ok else "camera (needs view)",
-            "identity": "faces" if s.named_faces else "enroll faces",
-            "privacy": "csi",
+            "counting": counting,
+            "identity": "faces" if s.named_faces else ("off" if not s.camera_ok else "enroll faces"),
+            "privacy": "wifi-path",
             "overall_now": presence,
         }
 
@@ -178,13 +194,11 @@ class StateHub:
             notes.append("CSI calibrating — keep the room path empty.")
         if s.comparison and s.comparison.get("headline"):
             notes.append(str(s.comparison["headline"]))
-        notes.append("Faces = opt-in gallery only. CSI/phones are not seat maps.")
-        if s.camera_count > 0 and s.csi_motion < 0.15 and s.csi_calibrated:
-            notes.append("Camera sees people; CSI quiet — maybe off the radio path.")
-        if s.csi_motion > 0.45 and s.camera_count == 0:
-            notes.append("CSI motion without camera — dark, occluded, or outside FOV.")
-        if s.ble_count == 0 and (s.camera_count > 0 or s.csi_presence > 0.5):
-            notes.append("Bodies without BLE phones nearby.")
-        if s.ble_count > 0 and s.camera_count == 0 and s.csi_motion < 0.2:
+        notes.append("WiFi motion is along the TX↔RX path — not a full-room seat map.")
+        if s.csi_motion > 0.45 and s.near_side == "none":
+            notes.append("Motion without a clear near-side — path estimate is soft.")
+        if s.ble_count == 0 and s.csi_presence > 0.5:
+            notes.append("Body motion on the link without BLE phones nearby.")
+        if s.ble_count > 0 and s.csi_motion < 0.2:
             notes.append("BLE devices nearby without body motion on the CSI link.")
         return notes

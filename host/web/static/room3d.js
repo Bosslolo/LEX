@@ -1,5 +1,5 @@
 /**
- * Big LEX room — radio heat + camera/faces + BLE devices.
+ * LEX room — WiFi heat along TX↔RX + BLE devices. ~9×7 m classroom.
  */
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -7,19 +7,18 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const C = {
   tx: 0x00d2ff,
   rx: 0xffb020,
-  cam: 0xf0b429,
   phone: 0x7aa2ff,
   floor: 0x0c1422,
 };
 
 const GRID = 32;
-const ROOM_W = 16;
-const ROOM_D = 12;
+const ROOM_W = 9;
+const ROOM_D = 7;
 
 export class RoomScene {
   constructor(container) {
     this.el = container;
-    this.layers = { csi: true, cam: true, phone: true };
+    this.layers = { csi: true, cam: false, phone: true };
     this.topDown = true;
     this._data = null;
     this._clock = new THREE.Clock();
@@ -83,13 +82,13 @@ export class RoomScene {
   }
 
   _setCameraTop() {
-    this.camera.position.set(0, 18, 0.02);
+    this.camera.position.set(0, 14, 0.02);
     this.controls.target.set(0, 0, 0);
     this.controls.update();
   }
 
   _setCameraOrbit() {
-    this.camera.position.set(11, 8, 11);
+    this.camera.position.set(8, 6, 8);
     this.controls.target.set(0, 0.4, 0);
     this.controls.update();
   }
@@ -224,8 +223,10 @@ export class RoomScene {
     const cellW = ROOM_W / GRID;
     const cellD = ROOM_D / GRID;
     const geo = new THREE.PlaneGeometry(cellW * 0.9, cellD * 0.9);
+    // Base must be white — instanceColor is multiplied; cyan zeroed the red channel
+    // and made strong motion look dimmer than mid values.
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x00d2ff,
+      color: 0xffffff,
       transparent: true,
       opacity: 0.4,
       side: THREE.DoubleSide,
@@ -273,23 +274,49 @@ export class RoomScene {
   _ensurePeople(n) {
     while (this._people.length < n) {
       const g = new THREE.Group();
-      const head = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2),
-        new THREE.MeshBasicMaterial({ color: C.cam })
+      const mat = () => new THREE.MeshStandardMaterial({
+        color: 0xb0c4de,
+        metalness: 0.15,
+        roughness: 0.45,
+        emissive: 0xb0c4de,
+        emissiveIntensity: 0.35,
+      });
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.18, 16, 12), mat());
+      head.position.y = 1.62;
+      const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.55, 6, 12), mat());
+      torso.position.y = 0.95;
+      const legL = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.45, 4, 8), mat());
+      legL.position.set(-0.12, 0.35, 0);
+      const legR = new THREE.Mesh(new THREE.CapsuleGeometry(0.08, 0.45, 4, 8), mat());
+      legR.position.set(0.12, 0.35, 0);
+      const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.4, 4, 8), mat());
+      armL.position.set(-0.34, 1.05, 0);
+      armL.rotation.z = 0.35;
+      const armR = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.4, 4, 8), mat());
+      armR.position.set(0.34, 1.05, 0);
+      armR.rotation.z = -0.35;
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.35, 0.55, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xb0c4de,
+          transparent: true,
+          opacity: 0.45,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
       );
-      head.position.y = 1.55;
-      const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.24, 0.75, 6, 12),
-        new THREE.MeshBasicMaterial({ color: C.cam })
-      );
-      body.position.y = 0.8;
-      const glow = new THREE.PointLight(C.cam, 0.9, 3.5);
-      glow.position.y = 1.3;
-      const label = this._makeLabel("?", C.cam);
-      label.position.set(0, 2.2, 0);
-      label.scale.set(2.4, 0.75, 1);
-      g.add(head, body, glow, label);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.03;
+      const glow = new THREE.PointLight(0xb0c4de, 1.1, 4);
+      glow.position.y = 1.2;
+      const label = this._makeLabel("?", 0xb0c4de);
+      label.position.set(0, 2.15, 0);
+      label.scale.set(2.6, 0.8, 1);
+      g.add(head, torso, legL, legR, armL, armR, ring, glow, label);
       g.userData.label = label;
+      g.userData.ring = ring;
+      g.userData.glow = glow;
+      g.userData.parts = [head, torso, legL, legR, armL, armR];
       g.visible = false;
       this.scene.add(g);
       this._people.push(g);
@@ -403,32 +430,63 @@ export class RoomScene {
 
   _applyPeople(persons) {
     const list = (persons || []).filter((p) => {
-      if (!this.layers.cam && (p.source === "camera" || p.source === "face")) return false;
+      if (p.source === "camera" || p.source === "face") return false;
       if (!this.layers.csi && p.source === "csi") return false;
       if (p.source === "phone") return false;
       return true;
     });
-    this._ensurePeople(list.length);
+    // If CSI says presence but no person yet, still show a figure on the path
+    const d = this._data || {};
+    const motion = Number(d.csi_motion || 0);
+    const presence = Number(d.csi_presence || 0);
+    let path = Number(d.csi_path_pos != null ? d.csi_path_pos : 0.5);
+    if (list[0] && list[0].path_pos != null) path = Number(list[0].path_pos);
+    // Heavy UI smooth + zone snap — host already hysteresis-settles path
+    this._pathSmooth =
+      this._pathSmooth == null ? path : this._pathSmooth * 0.92 + path * 0.08;
+    const sideHint = d.near_side || "none";
+    if (sideHint === "tx" || sideHint === "rx" || sideHint === "mid") {
+      const snap = sideHint === "tx" ? 0.18 : sideHint === "rx" ? 0.82 : 0.5;
+      this._pathSmooth = this._pathSmooth * 0.85 + snap * 0.15;
+    }
+
+    const show = list.length > 0 || (this.layers.csi && (presence > 0.5 || motion >= 0.28));
+    this._ensurePeople(show ? 1 : 0);
     for (let i = 0; i < this._people.length; i++) {
       const g = this._people[i];
-      if (i >= list.length) {
+      if (!show || i > 0) {
         g.visible = false;
         continue;
       }
-      const p = list[i];
-      const pos = p.position || [0, 0, 0];
+      const txX = -ROOM_W / 2 + 0.9;
+      const rxX = ROOM_W / 2 - 0.9;
+      const t = Math.max(0, Math.min(1, this._pathSmooth));
+      const x = txX + t * (rxX - txX);
       g.visible = true;
-      g.position.set(pos[0], 0, pos[2]);
-      const side = this._data?.near_side;
-      let col = C.cam;
-      let label = p.name || (p.source === "csi" ? "RADIO" : `P${i + 1}`);
-      if (p.source === "face" || p.name) col = C.tx;
-      else if (p.source === "csi") col = side === "rx" ? C.rx : side === "tx" ? C.tx : 0xb0c4de;
-      g.children.forEach((c) => {
-        if (c.isSprite) return;
-        if (c.material && c.material.color) c.material.color.setHex(col);
-        if (c.isLight) c.color.setHex(col);
-      });
+      g.position.set(x, 0, 0);
+      // Soft bob so it reads as a person, not a static prop
+      const bob = 1 + Math.sin(performance.now() / 280) * 0.015 * (0.4 + motion);
+      g.scale.setScalar(bob);
+
+      const side =
+        sideHint === "tx" || sideHint === "rx" || sideHint === "mid"
+          ? sideHint
+          : t <= 0.32
+            ? "tx"
+            : t >= 0.68
+              ? "rx"
+              : "mid";
+      const col = side === "rx" ? C.rx : side === "tx" ? C.tx : 0xb0c4de;
+      const label =
+        side === "tx" ? "Near TX" : side === "rx" ? "Near RX" : "Mid path";
+      for (const part of g.userData.parts || []) {
+        if (part.material) {
+          part.material.color.setHex(col);
+          if (part.material.emissive) part.material.emissive.setHex(col);
+        }
+      }
+      if (g.userData.glow) g.userData.glow.color.setHex(col);
+      if (g.userData.ring) g.userData.ring.material.color.setHex(col);
       this._setLabel(g.userData.label, label, col);
     }
   }
@@ -467,31 +525,34 @@ export class RoomScene {
   }
 
   _tick() {
-    const t = this._clock.getElapsedTime();
-    const d = this._data;
-    if (this._dust) {
-      this._dust.rotation.y = t * 0.02;
-      this._dust.position.y = Math.sin(t * 0.3) * 0.05;
+    try {
+      const t = this._clock.getElapsedTime();
+      const d = this._data;
+      if (this._dust) {
+        this._dust.rotation.y = t * 0.02;
+        this._dust.position.y = Math.sin(t * 0.3) * 0.05;
+      }
+      if (d) {
+        if (this.layers.csi) this._applyField(d.signal_field?.values);
+        this._applyPeople(d.room_persons || []);
+        this._applyPhones(d.phone_markers || []);
+        const side = d.near_side || "none";
+        const motion = d.csi_motion || 0;
+        const cal = !!d.csi_calibrating;
+        const blink = cal && Math.floor(performance.now() / 250) % 2 === 0;
+        const boostTx = side === "tx" || side === "mid" ? 1.5 + motion : 1;
+        const boostRx = side === "rx" || side === "mid" ? 1.5 + motion : 1;
+        this.tx.scale.setScalar(cal ? (blink ? 1.12 : 0.95) : 0.95 + 0.1 * boostTx);
+        this.rx.scale.setScalar(cal ? (blink ? 1.12 : 0.95) : 0.95 + 0.1 * boostRx);
+        this.tx.userData.light.intensity = (side === "tx" || side === "mid" ? 1.5 : 0.5) + motion;
+        this.rx.userData.light.intensity = (side === "rx" || side === "mid" ? 1.5 : 0.5) + motion;
+        this.tx.userData.ring.material.opacity = side === "tx" ? 0.55 + motion * 0.35 : 0.14;
+        this.rx.userData.ring.material.opacity = side === "rx" ? 0.55 + motion * 0.35 : 0.14;
+      }
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+    } finally {
+      this._raf = requestAnimationFrame(() => this._tick());
     }
-    if (d) {
-      if (this.layers.csi) this._applyField(d.signal_field?.values);
-      this._applyPeople(d.room_persons || []);
-      this._applyPhones(d.phone_markers || []);
-      const side = d.near_side || "none";
-      const motion = d.csi_motion || 0;
-      const cal = !!d.csi_calibrating;
-      const blink = cal && Math.floor(performance.now() / 250) % 2 === 0;
-      const boostTx = side === "tx" || side === "mid" ? 1.5 + motion : 1;
-      const boostRx = side === "rx" || side === "mid" ? 1.5 + motion : 1;
-      this.tx.scale.setScalar(cal ? (blink ? 1.12 : 0.95) : 0.95 + 0.1 * boostTx);
-      this.rx.scale.setScalar(cal ? (blink ? 1.12 : 0.95) : 0.95 + 0.1 * boostRx);
-      this.tx.userData.light.intensity = (side === "tx" || side === "mid" ? 1.5 : 0.5) + motion;
-      this.rx.userData.light.intensity = (side === "rx" || side === "mid" ? 1.5 : 0.5) + motion;
-      this.tx.userData.ring.material.opacity = side === "tx" ? 0.55 + motion * 0.35 : 0.14;
-      this.rx.userData.ring.material.opacity = side === "rx" ? 0.55 + motion * 0.35 : 0.14;
-    }
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    this._raf = requestAnimationFrame(() => this._tick());
   }
 }

@@ -1,8 +1,8 @@
-"""Floor signal field from CSI + optional camera people (GRID x GRID).
+"""Floor signal field from CSI (GRID x GRID).
 
-Honest scope (same as RuView field_localize with 1 link): peak along TX↔RX
-corridor only — not calibrated multi-person XY radar. Camera dots are real
-image positions mapped into the room when available.
+Honest scope with 1 TX↔RX link: peak along the radio corridor only —
+not calibrated multi-person XY radar / full-room scan.
+Room mapping uses ~9×7 m (school classroom).
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ from typing import Sequence
 
 
 GRID = 32
+# Visual / marker scale in meters (matches room3d.js)
+ROOM_W = 9.0
+ROOM_D = 7.0
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -29,19 +32,34 @@ def build_signal_field(
     motion: float,
     path_pos: float,
     presence: float,
-    people: Sequence[object] | None = None,
+    people: Sequence[object] | None = None,  # unused — kept for call-site compat
+    calibrating: bool = False,
 ) -> dict:
-    """Return `{grid_size:[GRID,1,GRID], values:[GRID*GRID floats]}`."""
+    """Return `{grid_size, values, persons}` — CSI corridor only (no camera)."""
+    del people  # camera intentionally not mixed into the radio field
     vals = [0.0] * (GRID * GRID)
-    # Quiet-room floor noise (RuView _flatField vibe)
+    if calibrating:
+        # Quiet floor only — never invent a person while empty-room baseline runs.
+        for iz in range(GRID):
+            for ix in range(GRID):
+                idx = iz * GRID + ix
+                gradient = math.sin(ix * 0.3) * math.sin(iz * 0.25) * 0.02
+                vals[idx] = _clamp(0.04 + gradient, 0.0, 0.12)
+        return {
+            "grid_size": [GRID, 1, GRID],
+            "values": vals,
+            "peak": {"x": GRID / 2.0, "z": GRID / 2.0, "v": 0.0},
+            "persons": [],
+        }
+    # Quiet-room floor noise
     for iz in range(GRID):
         for ix in range(GRID):
             idx = iz * GRID + ix
             gradient = math.sin(ix * 0.3) * math.sin(iz * 0.25) * 0.02
             vals[idx] = _clamp(0.04 + gradient, 0.0, 0.12)
 
-    # TX at left-center, RX at right-center → corridor along x, mid z
-    # path_pos 0..1 maps peak along that corridor
+    # TX left · RX right → corridor along x, mid z
+    # path_pos 0..1 maps peak along that corridor (near TX → near RX)
     cx = 2.0 + path_pos * (GRID - 4)
     cz = GRID / 2.0
     radius = 2.0 + motion * 2.8
@@ -51,41 +69,12 @@ def build_signal_field(
         for iz in range(GRID):
             for ix in range(GRID):
                 d = math.hypot(ix - cx, iz - cz)
-                # Slight elongation along the beam (tomography corridor)
                 beam = abs(iz - cz) / (GRID * 0.35)
                 v = _gaussian(d, radius) * amp * (1.0 - 0.25 * beam)
                 idx = iz * GRID + ix
                 vals[idx] = _clamp(vals[idx] + v)
 
-    def _xy(p: object) -> tuple[float, float, float, object]:
-        if isinstance(p, dict):
-            return (
-                float(p.get("x", 0.5)),
-                float(p.get("y", 0.5)),
-                float(p.get("conf", 0.6)),
-                p.get("id", "?"),
-            )
-        return (
-            float(getattr(p, "x", 0.5)),
-            float(getattr(p, "y", 0.5)),
-            float(getattr(p, "conf", 0.6)),
-            getattr(p, "id", "?"),
-        )
-
-    # Camera people → extra hot spots (real where-in-frame → room map)
-    if people:
-        for p in people:
-            px, py, conf, _ = _xy(p)
-            ix = _clamp(px, 0.05, 0.95) * (GRID - 1)
-            iz = _clamp(py, 0.05, 0.95) * (GRID - 1)
-            for z in range(GRID):
-                for x in range(GRID):
-                    d = math.hypot(x - ix, z - iz)
-                    vals[z * GRID + x] = _clamp(
-                        vals[z * GRID + x] + _gaussian(d, 1.4) * 0.55 * conf
-                    )
-
-    peak_x, peak_z, peak_v = 10.0, 10.0, 0.0
+    peak_x, peak_z, peak_v = GRID / 2.0, GRID / 2.0, 0.0
     for iz in range(GRID):
         for ix in range(GRID):
             v = vals[iz * GRID + ix]
@@ -96,33 +85,28 @@ def build_signal_field(
 
     persons: list[dict] = []
     if peak_v >= 0.22 and (motion >= 0.2 or presence > 0.5):
-        # Map grid cell → room coords roughly [-5..5]
+        # Stay on the TX↔RX line (boards sit at ±(ROOM_W/2 − 0.9), z=0).
+        # path_pos 0 = next to TX, 1 = next to RX — not free XY in the room.
+        tx_x = -(ROOM_W / 2.0) + 0.9
+        rx_x = (ROOM_W / 2.0) - 0.9
+        t = _clamp(float(path_pos), 0.0, 1.0)
+        x = tx_x + t * (rx_x - tx_x)
+        if t <= 0.32:
+            label = "Near TX"
+        elif t >= 0.68:
+            label = "Near RX"
+        else:
+            label = "Mid path"
         persons.append(
             {
-                "id": "radio",
+                "id": "wifi-motion",
                 "source": "csi",
-                "position": [(peak_x / (GRID - 1) - 0.5) * 14.0, 0.0, (peak_z / (GRID - 1) - 0.5) * 10.0],
+                "name": label,
+                "path_pos": round(t, 3),
+                "position": [x, 0.0, 0.0],
                 "motion_score": round(motion * 100, 1),
             }
         )
-    if people:
-        for i, p in enumerate(people):
-            px, py, conf, pid = _xy(p)
-            if isinstance(p, dict):
-                pname = str(p.get("name") or "")
-                psrc = str(p.get("source") or "camera")
-            else:
-                pname = str(getattr(p, "name", "") or "")
-                psrc = str(getattr(p, "source", "camera") or "camera")
-            persons.append(
-                {
-                    "id": f"cam{pid if pid != '?' else i}",
-                    "source": "face" if pname else psrc,
-                    "name": pname,
-                    "position": [(px - 0.5) * 14.0, 0.0, (py - 0.5) * 10.0],
-                    "motion_score": round(conf * 80, 1),
-                }
-            )
 
     return {
         "grid_size": [GRID, 1, GRID],

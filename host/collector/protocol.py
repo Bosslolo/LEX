@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 
 MAGIC_CSI = "lex.csi"
 MAGIC_STATUS = "lex.status"
+
+
+def _finite(v: Any, default: float = 0.0) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return default
+    return x if math.isfinite(x) else default
 
 
 @dataclass
@@ -20,17 +29,21 @@ class CsiFrame:
     amp_std: float
     phase_std: float
     subcarriers: list[float] = field(default_factory=list)
+    link: str = "espnow"  # espnow | ap-fallback (RX firmware)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], ts: float) -> "CsiFrame":
+        sc_raw = data.get("sc", data.get("subcarriers", [])) or []
+        sc = [_finite(x) for x in list(sc_raw)[:64]]
         return cls(
             ts=ts,
             node=str(data.get("node", "rx")),
-            rssi=float(data.get("rssi", 0.0)),
-            amp_mean=float(data.get("amp_mean", 0.0)),
-            amp_std=float(data.get("amp_std", 0.0)),
-            phase_std=float(data.get("phase_std", 0.0)),
-            subcarriers=[float(x) for x in data.get("sc", data.get("subcarriers", []))[:64]],
+            rssi=_finite(data.get("rssi"), -90.0),
+            amp_mean=_finite(data.get("amp_mean")),
+            amp_std=max(0.0, _finite(data.get("amp_std"))),
+            phase_std=max(0.0, _finite(data.get("phase_std"))),
+            subcarriers=sc,
+            link=str(data.get("link") or "espnow").lower(),
         )
 
 

@@ -146,6 +146,7 @@ async def run_ruview_bridge(
         try:
             raw = await asyncio.to_thread(_http_get_json, url)
             if raw:
+                hub.mark_csi_packet()
                 hub.update(**translate(raw))
         except asyncio.CancelledError:
             raise

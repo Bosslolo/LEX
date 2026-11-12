@@ -11,20 +11,23 @@ async function getMode() {
 
 async function setMode(mode, { go } = {}) {
   statusEl.textContent = `switching → ${mode}…`;
-  const res = await fetch("/api/mode", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
-  const data = await res.json();
-  statusEl.textContent = `mode: ${data.mode} · udp tx=${!!data.sent?.tx} rx=${!!data.sent?.rx} · serial tx=${!!data.sent?.tx_serial} rx=${!!data.sent?.rx_serial}`;
-  if (!go) return data;
-  if (mode === "lex") location.href = "/lex";
-  else if (mode === "ruview") {
-    // Full stock RuView UI on :3000 (same CSI via LEX hub adapter)
-    location.href = `${location.protocol}//${location.hostname}:3000/`;
-  } else location.href = "/";
-  return data;
+  try {
+    const res = await fetch("/api/mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    const data = await res.json();
+    statusEl.textContent = `mode: ${data.mode} · udp tx=${!!data.sent?.tx} rx=${!!data.sent?.rx} · serial tx=${!!data.sent?.tx_serial} rx=${!!data.sent?.rx_serial}`;
+    if (!go) return data;
+    if (mode === "lex") location.href = "/lex";
+    else if (mode === "ruview") location.href = "/ruview"; // server honours --ruview-http-port
+    else location.href = "/";
+    return data;
+  } catch (err) {
+    statusEl.textContent = `mode switch failed (${mode}) — is the host running?`;
+    return { ok: false, error: String(err) };
+  }
 }
 
 document.getElementById("btnLex").onclick = () => setMode("lex", { go: true });

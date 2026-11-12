@@ -212,20 +212,28 @@ def status_from_hub(snap: dict[str, Any]) -> dict[str, Any]:
     boards_ok = bool(snap.get("boards_ok"))
     pps = float(snap.get("csi_pps") or 0.0)
     live = boards_ok or pps > 0.5
+    # Avoid "LIVE ESP32 Connected" when nothing is streaming — RuView maps
+    # live_unverified / wifi → "live". Prefer an explicit offline signal.
+    if live:
+        source, source_state = "esp32", "live_verified"
+        hw = "connected"
+    else:
+        source, source_state = "disconnected", "offline"
+        hw = "waiting"
     return {
         "ok": True,
-        "source": "esp32" if live else "wifi",
-        "source_state": "live_verified" if live else "live_unverified",
+        "source": source,
+        "source_state": source_state,
         "services": {
             "api": "running",
-            "hardware": "connected" if live else "waiting",
-            "inference": "ready",
-            "streaming": "active",
+            "hardware": hw,
+            "inference": "idle",
+            "streaming": "active" if live else "idle",
         },
         "streaming": {
-            "active_connections": 1,
+            "active_connections": 1 if live else 0,
             "total_messages": int(pps * 10),
-            "uptime": int(time.time()),
+            "uptime": 0,
         },
         "boards_ok": boards_ok,
         "demo_mode": snap.get("demo_mode") or "lobby",
