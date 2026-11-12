@@ -354,8 +354,15 @@ def main() -> None:
                 csv_file.flush()
 
             if not args.headless:
-                cv2.imshow("LEX camera ↔ CSI compare", frame)
+                win = "LEX camera ↔ CSI compare"
+                cv2.imshow(win, frame)
                 key = cv2.waitKey(1) & 0xFF
+                # Red traffic-light close (macOS) or q / Esc
+                try:
+                    if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
+                        break
+                except cv2.error:
+                    break
                 if key in (ord("q"), 27):
                     break
                 if key == ord("s"):

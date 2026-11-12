@@ -78,12 +78,25 @@ LEX/
 - [docs/powerpoint-outline.md](docs/powerpoint-outline.md)  
 - [docs/ruview/](docs/ruview/) — optional RuView fork notes + school patch  
 
+## School demo (start / stop)
+
+See [`docs/DEMO-TOMORROW.md`](docs/DEMO-TOMORROW.md).
+
+```bash
+./scripts/demo-stop.sh       # kill stuck camera window
+./scripts/demo-start.sh      # Mac camera + CSI compare
+./scripts/demo-start.sh --phone   # Continuity / iPhone camera
+./scripts/demo-stop.sh --all # also unload RuView auto-start
+```
+
 ## npm aliases (optional)
 
 ```bash
 npm run setup      # venv + pip
 npm start          # python -m host.main
 npm run start:sim  # synthetic CSI, no camera
+npm run demo       # clean camera demo start
+npm run demo:stop  # clean stop
 npm run compare    # camera ↔ RuView CSI window
 npm run phase0     # tiny Node dashboard
 ```

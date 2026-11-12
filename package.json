@@ -8,6 +8,10 @@
     "start": "python3 -m host.main",
     "start:sim": "python3 -m host.main --sim --no-camera",
     "compare": "python3 tools/camera_compare.py",
+    "demo": "./scripts/demo-start.sh",
+    "demo:phone": "./scripts/demo-start.sh --phone",
+    "demo:stop": "./scripts/demo-stop.sh",
+    "cameras": "python3 tools/list_cameras.py",
     "phase0": "node server/index.js",
     "phase0:sim": "python3 tools/sim_presence.py",
     "check": "node -e \"console.log('node ok', process.version)\" && python3 -c \"print('python ok')\""
