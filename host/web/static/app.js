@@ -1,4 +1,4 @@
-import { RoomScene } from "./room3d.js?v=13";
+import { RoomScene } from "./room3d.js?v=16";
 
 const state = {
   data: null,
@@ -25,6 +25,14 @@ const els = {
 };
 
 const room = new RoomScene(document.getElementById("room3d"));
+
+const isRuviewSkin = false; // RuView is the stock UI on :3000, not a LEX reskin
+if (isRuviewSkin) {
+  document.body.classList.add("ruview-skin");
+  const h1 = document.querySelector("header.top h1");
+  if (h1) h1.textContent = "RuView";
+  document.title = "RuView · WiFi Sensing";
+}
 
 function escapeHtml(s) {
   return String(s)
@@ -211,6 +219,14 @@ document.getElementById("btnCalibrate").onclick = async () => {
 };
 document.getElementById("btnPresent").onclick = () => document.body.classList.toggle("presenter");
 document.getElementById("btnPanel").onclick = () => els.drawer.classList.toggle("open");
+document.getElementById("btnLobby").onclick = async () => {
+  await fetch("/api/mode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "lobby" }),
+  });
+  location.href = "/";
+};
 document.getElementById("btnEnroll").onclick = async () => {
   const name = els.faceName.value.trim();
   if (!name) return;

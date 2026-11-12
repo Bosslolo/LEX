@@ -39,7 +39,11 @@ class LiveState:
     csi_baseline: float = 0.0
     csi_threshold: float = 0.0
     csi_pps: float = 0.0
+    csi_rssi: float = -90.0
+    csi_amp_mean: float = 0.0
+    csi_amp_std: float = 0.0
     ble_count: int = 0
+
     devices: list[BleDeviceView] = field(default_factory=list)
     camera_count: int = 0
     people: list[PersonBox] = field(default_factory=list)
@@ -57,6 +61,7 @@ class LiveState:
     rx_ip: str = ""
     near_side: str = "none"  # tx | rx | mid | none
     mode: str = "live"
+    demo_mode: str = "lobby"  # lobby | lex | ruview (school lobby LED/UI switch)
     winners: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 

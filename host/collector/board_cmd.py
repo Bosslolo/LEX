@@ -132,3 +132,68 @@ async def notify_near(
         _send_serial(rx_serial, payload)
 
     await asyncio.to_thread(_go)
+
+
+def _sync_ms() -> int:
+    """Lower 32 bits of wall-clock ms — both boards lock rainbow phase to this."""
+    return int(time.time() * 1000) & 0xFFFFFFFF
+
+
+async def notify_mode(
+    *,
+    mode: str,
+    tx_ip: str | None,
+    rx_ip: str | None,
+    tx_serial: str | None = DEFAULT_TX_SERIAL,
+    rx_serial: str | None = DEFAULT_RX_SERIAL,
+) -> dict[str, Any]:
+    """Switch board demo mode: lobby (rainbow) | lex (cyan/amber) | ruview (purple)."""
+    m = (mode or "lobby").strip().lower()
+    if m not in ("lobby", "lex", "ruview"):
+        m = "lobby"
+    sync = _sync_ms()
+    payload = {"cmd": "mode", "mode": m, "sync_ms": sync}
+    sent: dict[str, Any] = {
+        "tx": False,
+        "rx": False,
+        "tx_serial": False,
+        "rx_serial": False,
+        "mode": m,
+        "sync_ms": sync,
+    }
+
+    def _go() -> None:
+        if tx_ip:
+            _send(tx_ip, TX_CMD_PORT, payload)
+            sent["tx"] = True
+        if rx_ip:
+            _send(rx_ip, RX_CMD_PORT, payload)
+            sent["rx"] = True
+        tx_s, rx_s = _detect_esp_serials()
+        sent["tx_serial"] = _send_serial(tx_serial or tx_s, payload)
+        sent["rx_serial"] = _send_serial(rx_serial or rx_s, payload)
+
+    await asyncio.to_thread(_go)
+    return sent
+
+
+async def notify_led_sync(
+    *,
+    tx_ip: str | None,
+    rx_ip: str | None,
+    tx_serial: str | None = DEFAULT_TX_SERIAL,
+    rx_serial: str | None = DEFAULT_RX_SERIAL,
+) -> None:
+    """Re-broadcast LED clock so rainbow stays locked in lobby."""
+    payload = {"cmd": "sync", "sync_ms": _sync_ms()}
+
+    def _go() -> None:
+        if tx_ip:
+            _send(tx_ip, TX_CMD_PORT, payload)
+        if rx_ip:
+            _send(rx_ip, RX_CMD_PORT, payload)
+        tx_s, rx_s = _detect_esp_serials()
+        _send_serial(tx_serial or tx_s, payload)
+        _send_serial(rx_serial or rx_s, payload)
+
+    await asyncio.to_thread(_go)

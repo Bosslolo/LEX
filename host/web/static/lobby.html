@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WiFi Sensing — Lobby</title>
+  <link rel="stylesheet" href="/static/lobby.css?v=2" />
+</head>
+<body>
+  <main class="lobby">
+    <p class="eyebrow">School demo</p>
+    <h1>WiFi Sensing</h1>
+    <p class="sub">Boards idle in <em>rainbow</em>. Pick a stack — LEDs switch, then open the UI.</p>
+
+    <div class="cards">
+      <button class="card lex" id="btnLex" type="button">
+        <span class="swatch cyan"></span>
+        <span class="swatch amber"></span>
+        <strong>LEX</strong>
+        <span>Cyan TX · Amber RX · our room UI</span>
+      </button>
+      <button class="card ruview" id="btnRuview" type="button">
+        <span class="swatch purple"></span>
+        <strong>RuView</strong>
+        <span>Purple boards · RuView-skinned live room</span>
+      </button>
+    </div>
+
+    <button class="ghost" id="btnLobby" type="button">Back to lobby (rainbow)</button>
+    <p class="status" id="status">mode: …</p>
+    <p class="hint">Open this page from your Mac: <code id="hintUrl"></code></p>
+  </main>
+  <script src="/static/lobby.js?v=3"></script>
+</body>
+</html>

@@ -85,7 +85,9 @@ class CsiDsp:
         var = sum((v - mean) ** 2 for v in vals) / max(1, len(vals))
         burst = var ** 0.5
         score = 0.55 * mean + 0.45 * burst
-        self._ema = 0.65 * self._ema + 0.35 * score
+        # Heavier smoothing — ESP-NOW RSSI variance is bursty and was
+        # flickering presence on/off every few hundred ms.
+        self._ema = 0.82 * self._ema + 0.18 * score
 
         if self._calibrating:
             self._cal_values.append(self._ema)
@@ -93,15 +95,28 @@ class CsiDsp:
             if time.time() - self._cal_start >= self.calibrate_s:
                 self._finish_calibration()
 
-        excess = max(0.0, self._ema - self._baseline_mean)
-        denom = max(self._threshold - self._baseline_mean, 0.05)
-        motion_n = min(1.0, excess / denom)
-        # Presence trips on sustained motion, not only absolute energy spike
-        presence = (
-            1.0
-            if self._calibrated and (motion_n >= 0.35 or self._ema >= self._threshold)
-            else 0.0
-        )
+        if self._calibrated:
+            excess = max(0.0, self._ema - self._baseline_mean)
+            denom = max(self._threshold - self._baseline_mean, 0.05)
+            motion_n = min(1.0, excess / denom)
+        else:
+            # Before empty-room calibrate finishes, only relative burst counts.
+            # Absolute excess vs the tiny default baseline always pegged at 1.0.
+            quiet = mean if vals else max(self._ema, 0.05)
+            motion_n = min(1.0, burst / max(0.06, 0.28 * quiet))
+
+        # Presence trips on sustained motion; stay quiet while calibrating
+        # so empty-room baseline isn't polluted by false "someone's here" UI.
+        if self._calibrating:
+            presence = 0.0
+            motion_n = min(motion_n, 0.2)
+        else:
+            presence = (
+                1.0
+                if motion_n >= (0.35 if self._calibrated else 0.5)
+                or (self._calibrated and self._ema >= self._threshold)
+                else 0.0
+            )
 
         # Soft along-beam cue from subcarrier tilt (not true XY radar)
         if subcarriers and len(subcarriers) >= 8:
@@ -113,7 +128,7 @@ class CsiDsp:
             self._path_pos = 0.85 * self._path_pos + 0.15 * target
 
         return SenseScores(
-            motion=motion_n if self._calibrated else 0.0,
+            motion=motion_n,
             presence=presence,
             energy=self._ema,
             calibrated=self._calibrated,

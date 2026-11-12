@@ -30,6 +30,11 @@ uint32_t calibrateUntilMs = 0;
 uint32_t nearUntilMs = 0;
 float nearStrength = 0.0f;
 
+// Demo modes (school lobby switches these over UDP/serial)
+enum DemoMode : uint8_t { MODE_LOBBY = 0, MODE_LEX = 1, MODE_RUVIEW = 2 };
+DemoMode demoMode = MODE_LOBBY;
+uint32_t ledClockOffset = 0;  // host wall sync so TX/RX rainbow match
+
 // RX identity = amber (not status-green)
 static const uint8_t ID_R = 255;
 static const uint8_t ID_G = 160;
@@ -89,9 +94,33 @@ void ledIdentity(uint8_t brightness = 255) {
 
 String serialCmdLine;
 
+void noteLedSync(uint32_t sync_ms) {
+  if (sync_ms == 0) return;
+  ledClockOffset = sync_ms - millis();
+}
+
+uint32_t ledClock() {
+  return millis() + ledClockOffset;
+}
+
+void setDemoMode(const char* mode) {
+  if (!mode) return;
+  if (strcmp(mode, "lex") == 0) demoMode = MODE_LEX;
+  else if (strcmp(mode, "ruview") == 0) demoMode = MODE_RUVIEW;
+  else demoMode = MODE_LOBBY;
+  calibrateUntilMs = 0;
+  nearUntilMs = 0;
+  Serial.printf("[RX] mode=%s\n", mode);
+}
+
 void applyCommand(JsonDocument& doc) {
   const char* cmd = doc["cmd"] | "";
-  if (strcmp(cmd, "calibrate") == 0) {
+  if (strcmp(cmd, "mode") == 0) {
+    setDemoMode(doc["mode"] | "lobby");
+    if (!doc["sync_ms"].isNull()) noteLedSync((uint32_t)doc["sync_ms"].as<unsigned long>());
+  } else if (strcmp(cmd, "sync") == 0) {
+    if (!doc["sync_ms"].isNull()) noteLedSync((uint32_t)doc["sync_ms"].as<unsigned long>());
+  } else if (strcmp(cmd, "calibrate") == 0) {
     float sec = doc["seconds"] | 20.0f;
     calibrateUntilMs = millis() + (uint32_t)(sec * 1000.0f);
     Serial.printf("[RX] calibrate %.1fs\n", sec);
@@ -136,9 +165,44 @@ void pollCommands() {
   }
 }
 
+void ledLobbyFrame() {
+  uint8_t phase = (uint8_t)((ledClock() / 40) % 256);
+  uint8_t r = 0, g = 0, b = 0;
+  if (phase < 85) {
+    r = 255 - phase * 3;
+    g = phase * 3;
+    b = 0;
+  } else if (phase < 170) {
+    phase -= 85;
+    r = 0;
+    g = 255 - phase * 3;
+    b = phase * 3;
+  } else {
+    phase -= 170;
+    r = phase * 3;
+    g = 0;
+    b = 255 - phase * 3;
+  }
+  setLed(r, g, b);
+}
+
+void ledRuviewFrame() {
+  bool on = ((ledClock() / 320) % 2) == 0;
+  if (on) setLed(160, 0, 220);
+  else setLed(40, 0, 60);
+}
+
 void updateStatusLed() {
   if (WiFi.status() != WL_CONNECTED) {
     setLed(180, 0, 0);
+    return;
+  }
+  if (demoMode == MODE_LOBBY) {
+    ledLobbyFrame();
+    return;
+  }
+  if (demoMode == MODE_RUVIEW) {
+    ledRuviewFrame();
     return;
   }
   if (millis() < calibrateUntilMs) {
@@ -155,12 +219,28 @@ void updateStatusLed() {
   ledIdentity(200);
 }
 
-void ledBootTest() {
-  setLed(255, 0, 0);
-  delay(250);
+void ledRainbowBoot() {
+  // Full RGB sweep so you can see the pixel works, then settle on RX amber.
+  const uint8_t steps[][3] = {
+      {255, 0, 0},
+      {255, 90, 0},
+      {255, 200, 0},
+      {0, 220, 0},
+      {0, 180, 255},
+      {255, 160, 20},  // RX identity
+      {120, 0, 255},
+      {255, 0, 180},
+  };
+  for (unsigned i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+    setLed(steps[i][0], steps[i][1], steps[i][2]);
+    delay(140);
+  }
   ledIdentity(255);
-  delay(450);
-  setLed(0, 0, 0);
+  delay(350);
+}
+
+void ledBootTest() {
+  ledRainbowBoot();
 }
 
 void connectWifi() {

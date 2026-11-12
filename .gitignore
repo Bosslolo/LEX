@@ -18,10 +18,11 @@ build/
 *.swp
 .pio/
 
-# Firmware artifacts
+# Firmware artifacts (except vendored RuView flash images)
 *.bin
 *.elf
 *.map
+!_ruview_fw/*.bin
 **/sdkconfig
 **/sdkconfig.old
 **/managed_components/
@@ -37,6 +38,8 @@ data/faces/*
 !data/faces/.gitkeep
 data/models/*
 !data/models/.gitkeep
+data/recordings/
+data/host.main.lock
 models/
 *.pt
 *.onnx
