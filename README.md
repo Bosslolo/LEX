@@ -4,6 +4,15 @@ School WiFi sensing pilot — **one repo** for CSI boards, room UI, camera basel
 
 Formerly split across `LEX` + `lex-wifi-csi`; everything school-related lives here now.
 
+
+## Branches
+
+| Branch | What |
+|--------|------|
+| `main` | School WiFi sensing host + ESP firmware + lobby/RuView dual UI (this default) |
+| `floor-locator` | Former `csh-floor-locator` — floor-plan people map (Node/Vite). Different stack; kept as its own branch. |
+
+Archived: `lex-wifi-csi` → use this repo. Floor locator remote `csh-floor-locator` is archived into the `floor-locator` branch here.
 ## What you get
 
 1. **Host + room UI** — TX↔RX CSI heat, camera people, BLE devices, compare scorecard  
