@@ -65,7 +65,7 @@ Firmware source of truth:
 
 ### 5. School / ops experiments
 
-**Tried:** Lobby LED modes (rainbow / LEX cyan-amber / RuView purple), UDP/serial commands, power-only boards after provision, cutover collector IP (e.g. `192.168.1.50`), school Wi‑Fi client isolation (PC→board UDP often blocked → serial fallback).
+**Tried:** Lobby LED modes (rainbow / LEX cyan-amber / RuView purple), UDP/serial commands, power-only boards after provision, cutover collector IP (demo LAN host), school Wi‑Fi client isolation (PC→board UDP often blocked → serial fallback).
 
 **Outcome:** Sensing UDP board→PC usually works; command path often needs USB or hotspot.
 

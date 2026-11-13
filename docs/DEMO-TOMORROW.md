@@ -5,7 +5,7 @@
 ```bash
 cd /path/to/LEX
 chmod +x scripts/demo-start.sh scripts/demo-stop.sh
-# .venv already set up from today
+# .venv already set up
 ```
 
 ## Clean start (Mac built-in camera)

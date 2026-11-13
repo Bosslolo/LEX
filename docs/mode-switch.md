@@ -37,14 +37,14 @@ One ESP image cannot be both native RuView CSI firmware and LEX LED lobby at onc
 .\.venv\Scripts\python.exe -m platformio run -t upload --upload-port COM5 -d firmware\rx
 
 # Point boards at the demo server (power-only target)
-python tools/provision.py --port COM7 --role tx --ssid SCHOOL-WIFI --password "…" --collector 192.168.1.50
-python tools/provision.py --port COM5 --role rx --ssid SCHOOL-WIFI --password "…" --collector 192.168.1.50
+python tools/provision.py --port COM7 --role tx --ssid YOUR_SSID --password "…" --collector 192.168.1.50
+python tools/provision.py --port COM5 --role rx --ssid YOUR_SSID --password "…" --collector 192.168.1.50
 
-# On 192.168.1.50 — lobby + LEX (:8080) + stock RuView UI (:3000 / WS :3001)
+# On the school demo host — lobby + LEX (:8080) + stock RuView UI (:3000 / WS :3001)
 python -m host.main --camera 0
 ```
 
-Clients: open `http://192.168.1.50:8080/` → LEX or RuView → Lobby to return (`:8080/`).
+Clients: open `http://<demo-host>:8080/` → LEX or RuView → Lobby to return (`:8080/`).
 
 ### Power-only checklist
 
@@ -52,8 +52,8 @@ Clients: open `http://192.168.1.50:8080/` → LEX or RuView → Lobby to return 
 |--------|------|
 | Yes | LEX firmware with lobby/lex/ruview LED modes |
 | Yes | Boards → collector CSI/status UDP `:5005` (works without USB) |
-| Do this | Re-provision both boards `--collector 192.168.1.50` while USB still plugged |
-| Do this | Run `python -m host.main --camera 0` on **192.168.1.50** (firewall: TCP 8080/3000/3001, UDP 5005) |
+| Do this | Re-provision both boards `--collector <demo-host-ip>` while USB still plugged |
+| Do this | Run `python -m host.main --camera 0` on the demo host (firewall: TCP 8080/3000/3001, UDP 5005) |
 | Do this | Confirm `boards_ok` + `csi_pps` on the new host, then unplug USB |
 | Maybe | Lobby LED mode over WiFi (UDP 4210/4211). School WiFi often blocks server→ESP; if LEDs stay rainbow, use serial once or a shared hotspot |
 
