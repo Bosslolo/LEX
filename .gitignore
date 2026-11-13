@@ -4,3 +4,17 @@ dist/
 .DS_Store
 # live client dump from the WLAN controller
 data/clients.json
+
+# Runtime / models (never commit)
+.venv/
+__pycache__/
+*.pyc
+data/camera_compare/
+data/faces/*
+!data/faces/.gitkeep
+data/replays/*
+!data/replays/.gitkeep
+*.pt
+*.onnx
+models/
+.env
