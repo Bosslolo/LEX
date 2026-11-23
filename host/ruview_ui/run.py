@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from pathlib import Path
 
 import uvicorn
 
@@ -53,6 +54,16 @@ async def serve_ruview_ui(
             "Stop the other process or pass --no-ruview-ui / different ports.",
             http_port,
             ws_port,
+        )
+        return
+
+    ui_dir = Path(__file__).resolve().parents[2] / "_ruview_ref" / "ui"
+    if not ui_dir.is_dir():
+        log.error(
+            "Missing %s (gitignored checkout). LEX lobby/room UI keeps running; "
+            "skip RuView :%s or clone RuView ui into _ruview_ref/ui.",
+            ui_dir,
+            http_port,
         )
         return
 

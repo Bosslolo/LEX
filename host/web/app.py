@@ -172,9 +172,20 @@ def create_app(
 
     @app.get("/ruview")
     async def ruview_redirect(request: Request) -> RedirectResponse:
-        # Full stock RuView UI (not a LEX reskin) — served on :3000.
+        # Full stock RuView UI (not a LEX reskin) — served on :3000 locally,
+        # or https://ruview.<same-domain>/ when LEX is reached via a public host.
         host = request.url.hostname or "127.0.0.1"
         port = getattr(app.state, "ruview_http_port", 3000)
+        if host.endswith("glaciers.online") or host.endswith("icicles.online"):
+            return RedirectResponse(url="https://ruview.glaciers.online/")
+        if host in ("127.0.0.1", "localhost") or host.startswith("10."):
+            return RedirectResponse(url=f"http://{host}:{port}/")
+        # LAN / other public hostnames: prefer sibling ruview.<parent>
+        parts = host.split(".")
+        if len(parts) >= 2:
+            parent = ".".join(parts[1:])
+            scheme = "https" if request.url.scheme == "https" else "http"
+            return RedirectResponse(url=f"{scheme}://ruview.{parent}/")
         return RedirectResponse(url=f"http://{host}:{port}/")
 
     @app.get("/api/state")

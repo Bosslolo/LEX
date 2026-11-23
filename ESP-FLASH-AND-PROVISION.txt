@@ -1,0 +1,100 @@
+================================================================================
+LEX — ESP32 paste commands (school server = this PC)
+Collector IP:  10.100.13.44
+UDP CSI port:  5005
+Host UI:       http://10.100.13.44:8090/     (AMP owns :8080 — leave it)
+RuView UI:     http://10.100.13.44:3000/
+================================================================================
+
+Open PowerShell on this school PC (or your flashing laptop with the LEX repo).
+
+0) Go to repo + venv
+---------------------
+cd C:\Users\csh_server\Desktop\Laurin\LEX
+.\.venv\Scripts\Activate.ps1
+
+
+1) List USB serial ports
+------------------------
+python tools\provision.py --list
+
+# Typical at home / school (CHANGE if --list shows otherwise):
+#   TX = COM7
+#   RX = COM5
+
+
+2) Flash latest LEX firmware (USB plugged, one board at a time)
+---------------------------------------------------------------
+# TX board
+python -m platformio run -t upload --upload-port COM7 -d firmware\tx
+
+# RX board
+python -m platformio run -t upload --upload-port COM5 -d firmware\rx
+
+
+3) Point boards at THIS school server (required after flash / WiFi change)
+-------------------------------------------------------------------------
+# Replace SSID/password with school WLAN (or phone hotspot if client-isolation blocks UDP).
+
+python tools\provision.py --port COM7 --role tx --ssid wlan-team --password "YOUR_PASSWORD" --collector 10.100.13.44
+python tools\provision.py --port COM5 --role rx --ssid wlan-team --password "YOUR_PASSWORD" --collector 10.100.13.44
+
+
+4) Power-only
+-------------
+Unplug data USB. Power boards from chargers / USB power-only.
+Host must already be running (see below).
+
+
+5) Confirm boards hit the host
+------------------------------
+# In browser or PowerShell:
+#   http://10.100.13.44:8090/api/state
+# Expect: boards_ok=true, tx_ip + rx_ip set, csi_pps ~15-25
+
+Invoke-RestMethod http://127.0.0.1:8090/api/state | Select-Object boards_ok, tx_ip, rx_ip, csi_pps, csi_calibrated
+
+
+6) Calibrate (empty path between TX and RX)
+-------------------------------------------
+Open http://10.100.13.44:8090/lex  →  Calibrate CSI
+Or:
+Invoke-RestMethod -Method Post "http://127.0.0.1:8090/api/calibrate?seconds=60"
+
+
+================================================================================
+HOST already set up on this machine (you usually do NOT re-run flash for host)
+================================================================================
+Start / restart LEX host (AMP left on 8080):
+
+cd C:\Users\csh_server\Desktop\Laurin\LEX
+.\scripts\start-school-server.ps1
+
+# Or manually:
+# .\.venv\Scripts\python.exe -m host.main --host 0.0.0.0 --port 8090 --udp-port 5005 --calibrate 0
+
+
+URLs (AMP left on :8080 — do not use 8080 for LEX)
+----------------------------------------------------
+Lobby:   http://10.100.13.44:8090/
+LEX:     http://10.100.13.44:8090/lex
+Local:   http://127.0.0.1:8090/
+
+RuView UI: http://10.100.13.44:3000/  (assets in _ruview_ref/ui — now installed)
+Lobby RuView button redirects there; boards go purple via mode command.
+
+
+Notes
+-----
+- If school WiFi blocks board→PC UDP: use a phone hotspot for laptop+boards, then
+  provision that hotspot SSID and still use collector 10.100.13.44 only if the PC
+  is on the hotspot. If PC stays on school LAN, collector must be the PC's IP on
+  the SAME network the boards join.
+- Laptop→board LED/mode UDP is often blocked; calibrate via UI still works from
+  host side; LED mode may need USB serial plugged once.
+- Do NOT use Tailscale / VMware / WSL IPs as --collector.
+- Right now boards already reach this host when provisioned to 10.100.13.44
+  (TX ~10.100.23.166, RX ~10.100.23.167). Re-flash only if you want latest
+  firmware hardening from the LEX repo.
+================================================================================
+
